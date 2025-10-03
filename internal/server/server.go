@@ -48,7 +48,7 @@ func (s *Server) RegisterRoutes() {
 	// Register middlewares
 	s.mux.Use(middleware.Logger)
 	s.mux.Use(middleware.Recoverer)
-	s.mux.Use(middleware.RealIP)
+	s.mux.Use(realIPMiddleware)
 
 	// Rate limiter
 	if s.config.RateLimiting.Enable {
@@ -110,4 +110,18 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if err := s.server.Shutdown(ctx); err != nil {
 		log.Error().Err(err).Msg("Failed to shutdown server")
 	}
+}
+
+func realIPMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if cfIP := r.Header.Get("CF-Connecting-IP"); cfIP != "" {
+			r.RemoteAddr = cfIP + ":0"
+		} else if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			ips := strings.Split(xff, ",")
+			if len(ips) > 0 {
+				r.RemoteAddr = strings.TrimSpace(ips[0]) + ":0"
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
