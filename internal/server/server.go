@@ -48,6 +48,7 @@ func (s *Server) RegisterRoutes() {
 	// Register middlewares
 	s.mux.Use(middleware.Logger)
 	s.mux.Use(middleware.Recoverer)
+	s.mux.Use(middleware.RealIP)
 
 	// Rate limiter
 	if s.config.RateLimiting.Enable {
