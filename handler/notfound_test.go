@@ -210,3 +210,40 @@ func TestNotFoundLimiterIPv6Network(t *testing.T) {
 	require.False(t, banned)
 	require.Equal(t, 1, l.Tracked())
 }
+
+func TestNotFoundLimiterSnapshotAndUnban(t *testing.T) {
+	clock := newFakeClock()
+	l := testLimiter(1, clock)
+
+	for i := 0; i < 2; i++ {
+		l.Miss("1.1.1.1")
+	}
+	clock.add(time.Minute)
+	for i := 0; i < 2; i++ {
+		l.Miss("2001:db8:1:2::1")
+	}
+	l.Miss("3.3.3.3")
+
+	list := l.Snapshot(10)
+	require.Len(t, list, 2)
+	require.Equal(t, "2001:db8:1:2::", list[0].Client, "the latest end first")
+	require.Equal(t, clock.t.Add(time.Hour).UTC(), list[0].Until)
+	require.Equal(t, "1.1.1.1", list[1].Client)
+	require.Len(t, l.Snapshot(1), 1)
+
+	// Unban lifts the ban and the count; a client with misses but no ban is no ban
+	require.True(t, l.Unban("1.1.1.1"))
+	_, banned := l.Banned("1.1.1.1")
+	require.False(t, banned)
+	_, banned = l.Miss("1.1.1.1")
+	require.False(t, banned)
+	require.False(t, l.Unban("3.3.3.3"))
+	require.False(t, l.Unban("9.9.9.9"))
+
+	clock.add(2 * time.Hour)
+	require.Empty(t, l.Snapshot(10))
+
+	var none *NotFoundLimiter
+	require.Empty(t, none.Snapshot(10))
+	require.False(t, none.Unban("1.1.1.1"))
+}

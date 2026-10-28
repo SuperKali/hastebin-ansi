@@ -240,6 +240,7 @@ type githubAccount struct {
 	ID        int64     `json:"id"`
 	Login     string    `json:"login"`
 	CreatedAt time.Time `json:"created_at"`
+	AvatarURL string    `json:"avatar_url"`
 }
 
 // githubUser trades the code for a token and reads the user with it. The
@@ -291,9 +292,11 @@ func (e *refusedError) Error() string { return "login refused: " + e.reason }
 
 // loginUser finds or registers the account of a GitHub user. A new account
 // needs a GitHub account at least MinAccountAge old, unless it is an admin's.
-// A disabled account is refused.
+// A disabled account is refused. The avatar is kept only when it is on
+// GitHub's avatar host.
 func (s *Service) loginUser(ctx context.Context, gh *githubAccount) (*accounts.User, error) {
-	user, _, err := s.db.LoginUser(ctx, gh.ID, gh.Login, false)
+	avatar := CheckAvatarURL(gh.AvatarURL)
+	user, _, err := s.db.LoginUser(ctx, gh.ID, gh.Login, avatar, false)
 	if errors.Is(err, accounts.ErrNotFound) {
 		if minAge := s.cfg.MinAccountAge; minAge >= 0 && !s.IsAdmin(gh.ID) {
 			if gh.CreatedAt.IsZero() || s.now().Sub(gh.CreatedAt) < minAge {
@@ -304,7 +307,7 @@ func (s *Service) loginUser(ctx context.Context, gh *githubAccount) (*accounts.U
 			}
 		}
 		var created bool
-		user, created, err = s.db.LoginUser(ctx, gh.ID, gh.Login, true)
+		user, created, err = s.db.LoginUser(ctx, gh.ID, gh.Login, avatar, true)
 		if err == nil && created {
 			log.Info().Int64("user_id", user.ID).Int64("github_id", gh.ID).Msg("New user registered")
 		}

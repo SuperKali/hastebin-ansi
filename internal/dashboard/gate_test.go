@@ -27,9 +27,9 @@ func newGateTest(t *testing.T) *gateTest {
 	require.NoError(t, err)
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
-	alice, _, err := db.LoginUser(ctx, 1, "alice", true)
+	alice, _, err := db.LoginUser(ctx, 1, "alice", "", true)
 	require.NoError(t, err)
-	bob, _, err := db.LoginUser(ctx, 2, "bob", true)
+	bob, _, err := db.LoginUser(ctx, 2, "bob", "", true)
 	require.NoError(t, err)
 	return &gateTest{
 		db:    db,

@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/armbian/ansi-hastebin/internal/abuse"
 	"github.com/armbian/ansi-hastebin/internal/auth"
 	"github.com/armbian/ansi-hastebin/internal/keygenerator"
 	"github.com/armbian/ansi-hastebin/internal/storage"
@@ -138,6 +139,9 @@ type DocumentHandler struct {
 	// means everyone is anonymous.
 	Readers func(w http.ResponseWriter, r *http.Request) (*auth.Principal, bool)
 
+	// Events records refusals for the admin page. nil records nothing.
+	Events *abuse.Events
+
 	// slots counts the large uploads in progress, in total and per client IP
 	slots     sync.Mutex
 	maxSlots  int
@@ -248,6 +252,11 @@ func (h *DocumentHandler) UploadSlots() (inUse, total int) {
 	h.slots.Lock()
 	defer h.slots.Unlock()
 	return h.slotCount, h.maxSlots
+}
+
+// Event records a refusal of the client at ip for the admin page, see abuse.Events
+func (h *DocumentHandler) Event(kind, ip, detail string) {
+	h.Events.Record(kind, ClientKey(ip), detail)
 }
 
 // ClientIP returns the client address of a request, as resolved by the real IP middleware
@@ -375,10 +384,12 @@ func (h *DocumentHandler) storeContent(u Uploader, key, content string) (string,
 
 	size := int64(len(content))
 	if err := h.CheckSpace(size); err != nil {
+		h.Event(abuse.KindNoSpace, u.IP, "upload")
 		return "", err
 	}
 	quota, q := u.quotaKey(), h.quota(u)
 	if left, ok := q.Charge(quota, size); !ok {
+		h.Event(abuse.KindQuota, u.IP, u.QuotaKey)
 		return "", &QuotaError{RetryAfter: left}
 	}
 
@@ -520,6 +531,7 @@ func (h *DocumentHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	key := strings.Split(chi.URLParam(r, "id"), ".")[0]
 	ip := ClientIP(r)
 	if left, banned := h.NotFound.Banned(ip); banned {
+		h.Event(abuse.KindNotFoundBan, ip, "read")
 		writeBanned(w, left)
 		return
 	}
@@ -533,6 +545,7 @@ func (h *DocumentHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 			h.writeReadError(w, ip, key, err)
 			return
 		}
+		setEdited(w, meta)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		return
@@ -547,8 +560,9 @@ func (h *DocumentHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 
 	meta.Delivered()
 	log.Debug().Str("key", key).Int64("size", doc.Size).Msg("Retrieved document")
+	setEdited(w, meta)
 	w.Header().Set("Content-Type", "application/json")
-	if err := writePreviewJSON(w, doc, key, PreviewSize, ownerJSON(meta)); err != nil {
+	if err := writePreviewJSON(w, doc, key, PreviewSize, metaJSON(meta)); err != nil {
 		log.Debug().Err(err).Msg("Failed to send document")
 	}
 }
@@ -727,6 +741,7 @@ func (h *DocumentHandler) HandleRawGet(w http.ResponseWriter, r *http.Request) {
 	key := strings.Split(chi.URLParam(r, "id"), ".")[0]
 	ip := ClientIP(r)
 	if left, banned := h.NotFound.Banned(ip); banned {
+		h.Event(abuse.KindNotFoundBan, ip, "read")
 		writeBanned(w, left)
 		return
 	}
@@ -746,6 +761,7 @@ func (h *DocumentHandler) HandleRawGet(w http.ResponseWriter, r *http.Request) {
 			h.writeReadError(w, ip, key, err)
 			return
 		}
+		setEdited(w, meta)
 		w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
 		w.Header().Set("Content-Length", fmt.Sprint(size))
 		w.WriteHeader(http.StatusOK)
@@ -761,8 +777,9 @@ func (h *DocumentHandler) HandleRawGet(w http.ResponseWriter, r *http.Request) {
 
 	meta.Delivered()
 	log.Debug().Str("key", key).Msg("Retrieved raw document")
+	setEdited(w, meta)
 	w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
-	setDownload(w, r, key)
+	setDownload(w, r, key, meta)
 	io.Copy(w, doc)
 }
 
@@ -800,25 +817,32 @@ func (h *DocumentHandler) serveRawFile(w http.ResponseWriter, r *http.Request, o
 		meta.Delivered()
 	}
 	log.Debug().Str("key", key).Int64("size", size).Msg("Retrieved raw document")
+	setEdited(w, meta)
 	w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
-	setDownload(w, r, key)
+	setDownload(w, r, key, meta)
 	http.ServeContent(keepNoStore(w), r, "", modTime, file)
 }
 
 // setDownload makes the answer of /raw/<key>.<ext>?download=1 a file to
-// save, named <key>.<ext>, or <key>.txt without a usable extension
-func setDownload(w http.ResponseWriter, r *http.Request, key string) {
+// save, named <key>.<ext>. Without a usable extension in the link the
+// extension comes from the language of the paste, else it is .txt. Only
+// ASCII letters, digits, - and _ ever reach the file name.
+func setDownload(w http.ResponseWriter, r *http.Request, key string, meta *Meta) {
 	if r.URL.Query().Get("download") != "1" {
 		return
 	}
 	ext := "txt"
 	if _, given, ok := strings.Cut(chi.URLParam(r, "id"), "."); ok && safeExtension(given) {
 		ext = strings.ToLower(given)
+	} else if meta != nil {
+		if byLanguage := ExtensionOfLanguage(meta.Language); byLanguage != "" {
+			ext = byLanguage
+		}
 	}
 	w.Header().Set("Content-Disposition", `attachment; filename="`+safeFileName(key)+"."+ext+`"`)
 }
 
-// safeExtension reports whether ext is 1 to 10 letters and digits
+// safeExtension reports whether ext is 1 to 10 ASCII letters and digits
 func safeExtension(ext string) bool {
 	if ext == "" || len(ext) > 10 {
 		return false
@@ -831,7 +855,7 @@ func safeExtension(ext string) bool {
 	return true
 }
 
-// safeFileName keeps the letters, digits, - and _ of a key, "paste" when none
+// safeFileName keeps the ASCII letters, digits, - and _ of a key, "paste" when none
 func safeFileName(key string) string {
 	name := strings.Map(func(c rune) rune {
 		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' {
@@ -870,11 +894,13 @@ func (h *DocumentHandler) writeReadError(w http.ResponseWriter, ip, key string, 
 	case errors.Is(err, storage.ErrNotFound):
 		log.Debug().Str("key", key).Msg("Document not found")
 		if left, banned := h.NotFound.Miss(ip); banned {
+			h.Event(abuse.KindNotFoundBan, ip, "read")
 			writeBanned(w, left)
 			return
 		}
 		http.Error(w, `{"message": "Document not found."}`, http.StatusNotFound)
 	case errors.Is(err, ErrMemoryBusy):
+		h.Event(abuse.KindBusy, ip, "read")
 		log.Warn().Msg("Read refused, the memory budget is full")
 		w.Header().Set("Retry-After", busyRetryAfter)
 		http.Error(w, `{"message": "Server busy, try again shortly."}`, http.StatusServiceUnavailable)
@@ -935,6 +961,7 @@ func (h *DocumentHandler) HandlePutLog(w http.ResponseWriter, r *http.Request) {
 func (h *DocumentHandler) ReceiveInto(w http.ResponseWriter, r *http.Request, u Uploader, key string) (string, bool) {
 	ip := u.IP
 	if left, over := h.quota(u).Exceeded(u.quotaKey()); over {
+		h.Event(abuse.KindQuota, ip, u.QuotaKey)
 		writeQuota(w, left)
 		return "", false
 	}
@@ -948,6 +975,7 @@ func (h *DocumentHandler) ReceiveInto(w http.ResponseWriter, r *http.Request, u 
 
 	// Refuse before reading the body when the disk is already too full for it
 	if err := h.CheckSpace(max(r.ContentLength, 0)); err != nil {
+		h.Event(abuse.KindNoSpace, ip, "upload")
 		writeNoSpace(w, err)
 		return "", false
 	}
@@ -956,6 +984,7 @@ func (h *DocumentHandler) ReceiveInto(w http.ResponseWriter, r *http.Request, u 
 	upload, ok := h.StartUpload(ip, r.ContentLength)
 	if !ok {
 		log.Warn().Int64("size", r.ContentLength).Msg("Upload rejected, all upload slots are busy")
+		h.Event(abuse.KindBusy, ip, "upload slots")
 		writeUploadBusy(w)
 		return "", false
 	}
@@ -994,6 +1023,7 @@ func (h *DocumentHandler) ReceiveInto(w http.ResponseWriter, r *http.Request, u 
 		http.Error(w, `{"message": "Upload too slow, try again on a faster connection."}`, http.StatusRequestTimeout)
 	case upload.OutOfMemory() || errors.Is(err, ErrMemoryBusy):
 		log.Warn().Msg("Upload dropped, the upload memory budget is full")
+		h.Event(abuse.KindBusy, ip, "upload memory")
 		writeUploadBusy(w)
 	case errors.Is(err, ErrHeadersTooLarge):
 		log.Info().Msg("Upload refused, multipart part headers too large")
@@ -1002,11 +1032,13 @@ func (h *DocumentHandler) ReceiveInto(w http.ResponseWriter, r *http.Request, u 
 		log.Info().Msg("Document exceeds max length")
 		writeTooLarge(w)
 	case errors.As(err, &quotaErr):
+		h.Event(abuse.KindQuota, ip, u.QuotaKey)
 		writeQuota(w, quotaErr.RetryAfter)
 	case errors.Is(err, ErrEmpty):
 		log.Info().Msg("Empty document refused")
 		http.Error(w, `{"message": "Document is empty."}`, http.StatusBadRequest)
 	case errors.Is(err, storage.ErrNoSpace):
+		h.Event(abuse.KindNoSpace, ip, "upload")
 		writeNoSpace(w, err)
 	case errors.As(err, new(*saveError)):
 		log.Error().Err(err).Msg("Error saving document")

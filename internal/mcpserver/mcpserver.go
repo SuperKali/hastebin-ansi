@@ -5,6 +5,7 @@ package mcpserver
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"regexp"
 	"regexp/syntax"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,8 +23,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/armbian/ansi-hastebin/handler"
+	"github.com/armbian/ansi-hastebin/internal/abuse"
+	"github.com/armbian/ansi-hastebin/internal/accounts"
 	"github.com/armbian/ansi-hastebin/internal/auth"
 	"github.com/armbian/ansi-hastebin/internal/storage"
+	"github.com/go-chi/httprate"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rs/zerolog/log"
@@ -159,7 +164,7 @@ type clientIPKey struct{}
 // uploadSlotKey marks a request that already holds an upload slot
 type uploadSlotKey struct{}
 
-// principalKey holds the account of a request with a bearer token
+// principalKey holds the account of a request with a good bearer token
 type principalKey struct{}
 
 // dbBusyResponse is the JSON-RPC error sent when the token could not be checked
@@ -201,19 +206,45 @@ type service struct {
 	searches     *toolLimiter
 	searchBudget time.Duration
 
+	// db holds the accounts, nil when they are off. user are the limits of
+	// a registered user's uploads, and userMaxLength the largest content
+	// their upload_log accepts: never more than maxLength, which the MCP
+	// body limit is built on.
+	db            *accounts.DB
+	user          UserLimits
+	userMaxLength int
+
 	// calls counts the tool calls made, by tool, since the start
 	uploadCalls atomic.Int64
 	readCalls   atomic.Int64
 	searchCalls atomic.Int64
+	listCalls   atomic.Int64
+
+	// now is the clock, replaced in tests
+	now func() time.Time
 }
 
 func newService(docs *handler.DocumentHandler, maxLength int) *service {
-	return &service{
+	svc := &service{
 		docs:         docs,
 		maxLength:    EffectiveMaxLength(maxLength, docs),
 		reads:        newToolLimiter("read_paste", maxToolReads),
 		searches:     newToolLimiter("search_paste", maxToolSearches),
 		searchBudget: defaultSearchBudget,
+		now:          time.Now,
+	}
+	svc.userMaxLength = svc.maxLength
+	return svc
+}
+
+// setUsers turns on the tools of registered users, on the accounts of db
+// held to limits
+func (s *service) setUsers(db *accounts.DB, limits UserLimits) {
+	s.db = db
+	s.user = limits
+	s.userMaxLength = s.maxLength
+	if limits.MaxLength > 0 {
+		s.userMaxLength = min(s.userMaxLength, limits.MaxLength)
 	}
 }
 
@@ -268,9 +299,22 @@ type Options struct {
 
 	// Bearer resolves the Authorization: Bearer header of a request, nil
 	// when accounts are off: the header is then ignored. A request with a
-	// bad token gets 401; one with a good token reads its owner's private
-	// pastes.
+	// bad token, or the token of a disabled account, gets 401; one with a
+	// good token reads its owner's private pastes. Cookies are never read.
 	Bearer func(r *http.Request) (*auth.Principal, error)
+
+	// Accounts is the accounts database, nil when accounts are off. With it,
+	// a request with a good token gets the tools of a registered user:
+	// owned uploads, private pastes, tags and list_my_pastes.
+	Accounts *accounts.DB
+
+	// User are the limits of a registered user's uploads
+	User UserLimits
+
+	// UserRateLimit is how many requests one account may send a minute,
+	// whatever address they come from, on top of the limits per client. 0
+	// means DefaultUserRateLimit, a negative value no limit.
+	UserRateLimit int
 }
 
 // Handler is the HTTP handler of the MCP endpoint
@@ -281,7 +325,7 @@ type Handler struct {
 	inflight *handler.InflightLimiter
 
 	requests atomic.Int64 // requests received
-	refused  atomic.Int64 // requests refused with 429 for too many in progress
+	refused  atomic.Int64 // requests refused with 429, for too many in progress or the per account limit
 }
 
 // Stats is what the MCP endpoint is doing now and has done since the start
@@ -303,6 +347,7 @@ type Stats struct {
 	Uploads  int64 `json:"uploads"`
 	Reads    int64 `json:"reads"`
 	Searches int64 `json:"searches"`
+	Lists    int64 `json:"lists"`
 }
 
 // Stats returns the current use and the counters of the endpoint
@@ -320,13 +365,28 @@ func (h *Handler) Stats() Stats {
 		Uploads:         h.svc.uploadCalls.Load(),
 		Reads:           h.svc.readCalls.Load(),
 		Searches:        h.svc.searchCalls.Load(),
+		Lists:           h.svc.listCalls.Load(),
 	}
 }
 
-// NewHandler returns the HTTP handler for the MCP endpoint
+// NewHandler returns the HTTP handler for the MCP endpoint. A request
+// without a token gets the anonymous tools, the same as before accounts; one
+// with a good token gets the tools of its account.
 func NewHandler(docs *handler.DocumentHandler, opts Options) *Handler {
 	svc := newService(docs, opts.MaxLength)
-	server := svc.newServer()
+	anonServer := svc.newServer()
+	var userServer *mcp.Server
+	if opts.Accounts != nil {
+		svc.setUsers(opts.Accounts, opts.User)
+		userServer = svc.newUserServer()
+	}
+	var userLimit *httprate.RateLimiter
+	if rate := cmp.Or(opts.UserRateLimit, DefaultUserRateLimit); rate > 0 {
+		// Only a refused request says so, with Retry-After: a counter on
+		// every answer would tell apart answers that must look the same
+		userLimit = httprate.NewRateLimiter(rate, userRateWindow,
+			httprate.WithResponseHeaders(httprate.ResponseHeaders{RetryAfter: "Retry-After"}))
+	}
 	limit := bodyLimit(svc.maxLength, docs)
 	maxInflight := opts.MaxInflightPerClient
 	if maxInflight == 0 {
@@ -335,7 +395,13 @@ func NewHandler(docs *handler.DocumentHandler, opts Options) *Handler {
 	inflight := handler.NewInflightLimiter(maxInflight)
 	h := &Handler{svc: svc, inflight: inflight}
 
-	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+	getServer := func(r *http.Request) *mcp.Server {
+		if userServer != nil && principalOf(r.Context()) != nil {
+			return userServer
+		}
+		return anonServer
+	}
+	mcpHandler := mcp.NewStreamableHTTPHandler(getServer, &mcp.StreamableHTTPOptions{
 		Stateless:           true,
 		JSONResponse:        true,
 		MaxRequestBodyBytes: limit,
@@ -373,6 +439,7 @@ func NewHandler(docs *handler.DocumentHandler, opts Options) *Handler {
 		release, ok := inflight.Acquire(ip)
 		if !ok {
 			h.refused.Add(1)
+			docs.Event(abuse.KindInflight, ip, "mcp")
 			log.Info().Msg("MCP request rejected, the client has too many requests in progress")
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", inflightRetryAfter)
@@ -386,18 +453,14 @@ func NewHandler(docs *handler.DocumentHandler, opts Options) *Handler {
 		ctx = context.WithValue(ctx, requestKey{}, r.Context())
 		ctx = context.WithValue(ctx, clientIPKey{}, ip)
 
-		// A bearer token is resolved before the SDK runs: a bad one is 401,
-		// never anonymous
+		// A bearer token is resolved before the SDK runs: a bad one, or one
+		// of a disabled account, is 401, never anonymous. Cookies are not
+		// looked at: only a token makes an MCP request a user's.
 		if opts.Bearer != nil && auth.HasBearer(r) {
 			p, err := opts.Bearer(r)
 			switch {
-			case errors.Is(err, auth.ErrInvalidToken):
+			case errors.Is(err, auth.ErrInvalidToken) || errors.Is(err, auth.ErrDisabled):
 				auth.WriteInvalidToken(w, false)
-				return
-			case errors.Is(err, auth.ErrDisabled):
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
-				fmt.Fprintln(w, `{"message": "This account is disabled."}`)
 				return
 			case err != nil:
 				log.Error().Err(err).Msg("Failed to resolve the token of an MCP request")
@@ -408,6 +471,19 @@ func NewHandler(docs *handler.DocumentHandler, opts Options) *Handler {
 				return
 			}
 			ctx = context.WithValue(ctx, principalKey{}, p)
+
+			// Each account has its own budget of requests, on top of the
+			// limits per client address
+			if p != nil && p.User != nil && userLimit != nil &&
+				userLimit.OnLimit(w, r, "u:"+strconv.FormatInt(p.User.ID, 10)) {
+				h.refused.Add(1)
+				docs.Event(abuse.KindRateLimit, ip, "mcp user "+strconv.FormatInt(p.User.ID, 10))
+				log.Info().Int64("user_id", p.User.ID).Msg("MCP request rejected, the account sent too many requests")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				fmt.Fprintln(w, userRateResponse)
+				return
+			}
 		}
 
 		// The SDK reads and decodes the whole body before any tool runs, about 6
@@ -420,6 +496,7 @@ func NewHandler(docs *handler.DocumentHandler, opts Options) *Handler {
 				upload, ok = docs.StartUpload(ip, r.ContentLength)
 				if !ok {
 					log.Warn().Int64("size", r.ContentLength).Msg("MCP request rejected, all upload slots are busy")
+					docs.Event(abuse.KindBusy, ip, "mcp upload slots")
 					w.Header().Set("Content-Type", "application/json")
 					w.Header().Set("Retry-After", "10")
 					w.WriteHeader(http.StatusServiceUnavailable)
@@ -446,6 +523,7 @@ func NewHandler(docs *handler.DocumentHandler, opts Options) *Handler {
 			first, err := firstJSONByte(body)
 			if errors.Is(err, handler.ErrMemoryBusy) {
 				log.Warn().Msg("MCP request dropped, the upload memory budget is full")
+				docs.Event(abuse.KindBusy, ip, "mcp upload memory")
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusServiceUnavailable)
 				fmt.Fprintln(w, busyResponse)

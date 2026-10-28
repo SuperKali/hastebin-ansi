@@ -16,7 +16,7 @@ import (
 // newUser makes an account and returns it
 func newUser(t *testing.T, db *DB, githubID int64, login string) *User {
 	t.Helper()
-	u, _, err := db.LoginUser(context.Background(), githubID, login, true)
+	u, _, err := db.LoginUser(context.Background(), githubID, login, "", true)
 	require.NoError(t, err)
 	return u
 }

@@ -101,3 +101,41 @@ func TestUploadQuotaBounded(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, 1, q.Tracked())
 }
+
+func TestUploadQuotaSnapshotAndReset(t *testing.T) {
+	clock := newFakeClock()
+	q := testQuota(100, clock)
+
+	_, ok := q.Charge("192.0.2.1", 100)
+	require.True(t, ok)
+	_, ok = q.Charge("192.0.2.2", 30)
+	require.True(t, ok)
+	clock.add(time.Minute)
+	// A refused upload counts as blocked, even with room left for smaller ones
+	_, ok = q.Charge("2001:db8:1:2::9", 101)
+	require.False(t, ok)
+
+	list := q.Snapshot(10)
+	require.Len(t, list, 2)
+	require.Equal(t, "2001:db8:1:2::", list[0].Client, "the longest wait first")
+	require.Equal(t, "192.0.2.1", list[1].Client)
+	require.EqualValues(t, 100, list[1].Used)
+	require.Equal(t, clock.t.Add(59*time.Minute).UTC(), list[1].Until)
+	require.Len(t, q.Snapshot(1), 1)
+	require.Empty(t, q.Snapshot(0))
+
+	// Reset lets the client upload again at once; an unblocked one is no block
+	require.True(t, q.Reset("192.0.2.1"))
+	_, ok = q.Charge("192.0.2.1", 100)
+	require.True(t, ok)
+	require.False(t, q.Reset("192.0.2.2"))
+	require.False(t, q.Reset("203.0.113.1"))
+
+	// A new window ends the block
+	clock.add(time.Hour)
+	require.Empty(t, q.Snapshot(10))
+
+	var none *UploadQuota
+	require.Empty(t, none.Snapshot(10))
+	require.False(t, none.Reset("192.0.2.1"))
+}

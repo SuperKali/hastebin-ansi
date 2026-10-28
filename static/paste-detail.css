@@ -1,0 +1,523 @@
+/* The page of one paste in the dashboard: details, editor, versions, history.
+   Builds on dashboard.css and its colors. */
+
+.detail .back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+    color: var(--muted);
+    font-size: 13px;
+    text-decoration: none;
+}
+
+.detail .back:hover {
+    color: #fff;
+}
+
+.detail.busy .detail-grid {
+    opacity: 0.6;
+    transition: opacity 0.2s ease;
+}
+
+.detail-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px 20px;
+    margin-bottom: 18px;
+}
+
+.detail-name {
+    min-width: 0;
+}
+
+.detail-name h1 {
+    margin: 0 0 6px;
+    color: var(--strong);
+    font-size: 22px;
+    line-height: 28px;
+    overflow-wrap: anywhere;
+}
+
+.detail-name h1.untitled {
+    font-family: var(--mono);
+    font-size: 20px;
+}
+
+.detail-sub {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+}
+
+.detail-sub code {
+    color: var(--muted);
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: rgba(79, 193, 181, 0.08);
+    color: var(--accent);
+    font-size: 11.5px;
+    letter-spacing: 0.02em;
+}
+
+.badge.private {
+    background: rgba(181, 137, 0, 0.1);
+    border-color: rgba(181, 137, 0, 0.4);
+    color: #d9a800;
+}
+
+.detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.detail-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    align-items: start;
+    gap: 16px;
+}
+
+.detail-side {
+    display: grid;
+    gap: 16px;
+    min-width: 0;
+}
+
+/* Editor */
+
+.editor-card {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.editor-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 12px;
+}
+
+.editor-head h2 {
+    margin-bottom: 0;
+}
+
+.window-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 30px;
+    padding: 0 12px 0 6px;
+    border: 1px solid var(--line);
+    border-radius: 15px;
+    background: #00232c;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    white-space: nowrap;
+}
+
+.window-state .ring {
+    display: none;
+    transform: rotate(-90deg);
+}
+
+.window-state .lock {
+    margin-left: 4px;
+    color: var(--muted);
+}
+
+.window-open .window-state {
+    border-color: rgba(79, 193, 181, 0.5);
+    color: var(--strong);
+}
+
+.window-open .window-state .ring {
+    display: block;
+}
+
+.window-open .window-state .lock {
+    display: none;
+}
+
+.ring circle {
+    fill: none;
+    stroke-width: 4;
+}
+
+.ring-track {
+    stroke: var(--line);
+}
+
+.ring-left {
+    stroke: var(--accent);
+    stroke-linecap: round;
+    stroke-dasharray: 100;
+    stroke-dashoffset: 0;
+    transition: stroke-dashoffset 1s linear, stroke 0.3s ease;
+}
+
+.window-state.low {
+    border-color: rgba(181, 137, 0, 0.6);
+}
+
+.window-state.low .ring-left {
+    stroke: var(--warn);
+}
+
+.window-state.low .ring {
+    animation: ring-pulse 1s ease-in-out infinite;
+}
+
+@keyframes ring-pulse {
+    50% { opacity: 0.55; }
+}
+
+.window-hint {
+    margin: 10px 0 10px !important;
+}
+
+.d-text {
+    display: block;
+    width: 100%;
+    min-height: 460px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #00232c;
+    color: var(--strong);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 19px;
+    tab-size: 4;
+    font-variant-ligatures: none;
+    white-space: pre;
+    overflow: auto;
+    resize: vertical;
+}
+
+.d-text:focus {
+    border-color: var(--accent);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(79, 193, 181, 0.2);
+}
+
+.d-text:disabled {
+    opacity: 0.6;
+}
+
+.d-large {
+    padding: 14px;
+    border: 1px dashed var(--line);
+    border-radius: 6px;
+}
+
+.editor-foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px 16px;
+    margin-top: 12px;
+}
+
+.d-dirty {
+    margin-right: auto;
+    color: var(--warn);
+    font-size: 12.5px;
+}
+
+.d-save[disabled] {
+    cursor: default;
+}
+
+/* Details form */
+
+.meta-form {
+    display: grid;
+    gap: 12px;
+}
+
+.meta-form .actions {
+    align-items: center;
+    margin-top: 2px;
+}
+
+.meta-form .status-line {
+    margin-top: 0 !important;
+}
+
+.meta-form input[type="text"],
+.meta-form select {
+    width: 100%;
+}
+
+input[type="datetime-local"] {
+    height: 34px;
+    min-width: 0;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #00232c;
+    color: var(--strong);
+    font: inherit;
+    color-scheme: dark;
+}
+
+input[type="datetime-local"]:focus {
+    border-color: var(--accent);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(79, 193, 181, 0.2);
+}
+
+.expiry-row {
+    display: flex;
+    gap: 8px;
+}
+
+.expiry-row select {
+    flex: 0 0 auto;
+    width: auto;
+}
+
+.expiry-row input {
+    flex: 1 1 auto;
+}
+
+.seg-field {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+}
+
+.seg-field legend {
+    margin-bottom: 4px;
+    padding: 0;
+    color: var(--muted);
+    font-size: 11.5px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.seg-pick {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding: 3px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: #00232c;
+}
+
+.seg-pick label {
+    position: relative;
+    cursor: pointer;
+}
+
+.seg-pick input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.seg-pick span {
+    display: block;
+    padding: 6px 8px;
+    border-radius: 5px;
+    color: var(--muted);
+    font-size: 12.5px;
+    text-align: center;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.seg-pick input:checked + span {
+    background: var(--line);
+    color: #fff;
+}
+
+.seg-pick input:focus-visible + span {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+/* Versions: a rail with one node per version */
+
+.chain {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.chain li {
+    position: relative;
+    padding: 0 0 12px 24px;
+}
+
+.chain li:last-child {
+    padding-bottom: 0;
+}
+
+.chain li::before {
+    content: "";
+    position: absolute;
+    top: 5px;
+    left: 4px;
+    width: 9px;
+    height: 9px;
+    border: 2px solid var(--accent);
+    border-radius: 50%;
+    background: var(--panel);
+    box-sizing: border-box;
+}
+
+.chain li:not(:last-child)::after {
+    content: "";
+    position: absolute;
+    top: 16px;
+    bottom: 0;
+    left: 8px;
+    width: 1px;
+    background: var(--line);
+}
+
+.chain li.current::before {
+    background: var(--accent);
+    box-shadow: 0 0 0 4px rgba(79, 193, 181, 0.18);
+}
+
+.chain li.gone::before {
+    border-style: dashed;
+    border-color: var(--muted);
+}
+
+.chain a,
+.chain li > span {
+    display: inline-flex;
+    gap: 10px;
+    align-items: baseline;
+    text-decoration: none;
+}
+
+.v-num {
+    color: var(--strong);
+    font-family: var(--mono);
+    font-weight: 600;
+}
+
+.chain a .v-num {
+    color: var(--accent);
+}
+
+.chain a:hover .v-num {
+    color: #fff;
+}
+
+.v-when {
+    color: var(--muted);
+    font-size: 12.5px;
+}
+
+.chain li.gone .v-num {
+    color: var(--muted);
+    text-decoration: line-through;
+}
+
+/* Edit history */
+
+.history {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.history li {
+    display: grid;
+    grid-template-columns: 52px 1fr auto;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 0;
+    border-top: 1px solid rgba(23, 75, 87, 0.6);
+    font-size: 13px;
+}
+
+.history li:first-child {
+    border-top: 0;
+}
+
+.h-when {
+    color: var(--strong);
+    font-family: var(--mono);
+}
+
+.h-size {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12.5px;
+}
+
+.h-what {
+    color: var(--accent);
+    font-size: 12px;
+}
+
+.history a {
+    font-size: 12.5px;
+}
+
+@media (max-width: 980px) {
+    .detail-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+@media (max-width: 600px) {
+    .detail-head {
+        align-items: flex-start;
+    }
+
+    .detail-actions {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        width: 100%;
+    }
+
+    .detail-actions .btn {
+        justify-content: center;
+        padding: 0 8px;
+    }
+
+    .d-text {
+        min-height: 320px;
+        font-size: 12.5px;
+    }
+
+    .editor-foot .btn {
+        flex: 1 1 100%;
+        justify-content: center;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ring-left,
+    .seg-pick span,
+    .detail.busy .detail-grid {
+        transition: none;
+    }
+
+    .window-state.low .ring {
+        animation: none;
+    }
+}

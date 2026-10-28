@@ -18,6 +18,8 @@ type Access struct {
 	CreatedAt  time.Time
 	ExpiresAt  time.Time // zero for never
 	SeenAt     time.Time // zero while no one else opened it
+	EditedAt   time.Time // zero while the content never changed
+	Language   string    // "" when unknown
 
 	// Tombstoned is set when a moderator removed the paste, which was
 	// TombstoneVisibility then
@@ -29,12 +31,14 @@ type Access struct {
 func (db *DB) AccessOf(ctx context.Context, key string) (*Access, error) {
 	var a Access
 	var user, visibility, created, tombVisibility sql.NullInt64
-	var expires, seen sql.NullInt64
-	err := db.R.QueryRowContext(ctx, `SELECT p.user_id, p.visibility, p.created_at, p.expires_at, p.seen_at, t.visibility
+	var expires, seen, edited sql.NullInt64
+	var language sql.NullString
+	err := db.R.QueryRowContext(ctx, `SELECT p.user_id, p.visibility, p.created_at, p.expires_at, p.seen_at, p.edited_at,
+		p.language, t.visibility
 		FROM (SELECT ? AS k) q
 		LEFT JOIN pastes p ON p.key = q.k
 		LEFT JOIN tombstones t ON t.key = q.k`, key).
-		Scan(&user, &visibility, &created, &expires, &seen, &tombVisibility)
+		Scan(&user, &visibility, &created, &expires, &seen, &edited, &language, &tombVisibility)
 	if err != nil {
 		return nil, err
 	}
@@ -45,6 +49,8 @@ func (db *DB) AccessOf(ctx context.Context, key string) (*Access, error) {
 		a.CreatedAt = time.Unix(created.Int64, 0).UTC()
 		a.ExpiresAt = fromUnix(expires)
 		a.SeenAt = fromUnix(seen)
+		a.EditedAt = fromUnix(edited)
+		a.Language = language.String
 	}
 	if tombVisibility.Valid {
 		a.Tombstoned = true

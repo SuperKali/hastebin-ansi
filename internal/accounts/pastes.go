@@ -24,6 +24,10 @@ var (
 	// ErrRevoked is returned when the session or token an upload came with
 	// was removed before the upload was recorded
 	ErrRevoked = errors.New("session or token revoked")
+
+	// ErrUserDisabled is returned when the account of an upload was
+	// disabled before the upload was recorded
+	ErrUserDisabled = errors.New("account disabled")
 )
 
 // Paste is the metadata of a registered paste. The content is in the store.
@@ -94,6 +98,15 @@ type NewPaste struct {
 	Size       int64
 	Tags       []string // normalized already
 
+	// PrevKey makes the paste the next version of that paste of the same
+	// user: it joins its chain (root_key) one past the newest version. A
+	// PrevKey that is gone, or someone else's, is ErrNotFound.
+	PrevKey string
+
+	// DeletePrevious deletes PrevKey in the same transaction and queues its
+	// content, revisions included
+	DeletePrevious bool
+
 	// TokenID or SessionHash name what authenticated the upload; when set it
 	// must still exist when the row is written, else ErrRevoked
 	TokenID     int64
@@ -127,8 +140,10 @@ func (db *DB) Usage(ctx context.Context, userID int64) (count, bytes int64, err 
 
 // InsertPaste records a paste whose content is stored already. Within the
 // same transaction it checks that the token or session of the upload still
-// exists (ErrRevoked) and the limits of the user: ErrPasteLimit or
-// ErrStorageLimit when the paste does not fit. Then nothing is recorded.
+// exists (ErrRevoked), that the account is not disabled (ErrUserDisabled),
+// and the limits of the user: ErrPasteLimit or ErrStorageLimit when the
+// paste does not fit, and ErrNotFound for a PrevKey that is gone. Then
+// nothing is recorded.
 func (db *DB) InsertPaste(ctx context.Context, p NewPaste, limits Limits) error {
 	tx, err := db.W.BeginTx(ctx, nil)
 	if err != nil {
@@ -136,18 +151,8 @@ func (db *DB) InsertPaste(ctx context.Context, p NewPaste, limits Limits) error 
 	}
 	defer tx.Rollback()
 
-	if p.TokenID != 0 || p.SessionHash != nil {
-		var n int
-		query, arg := "SELECT COUNT(*) FROM api_tokens WHERE id = ? AND user_id = ?", any(p.TokenID)
-		if p.TokenID == 0 {
-			query, arg = "SELECT COUNT(*) FROM sessions WHERE id_hash = ? AND user_id = ?", p.SessionHash
-		}
-		if err := tx.QueryRowContext(ctx, query, arg, p.UserID).Scan(&n); err != nil {
-			return err
-		}
-		if n == 0 {
-			return ErrRevoked
-		}
+	if err := checkUploader(ctx, tx, p.UserID, p.TokenID, p.SessionHash); err != nil {
+		return err
 	}
 
 	count, bytes, err := usage(ctx, tx, p.UserID)
@@ -161,19 +166,40 @@ func (db *DB) InsertPaste(ctx context.Context, p NewPaste, limits Limits) error 
 		return ErrStorageLimit
 	}
 
-	var expires any
+	var expires, prev any
 	if !p.ExpiresAt.IsZero() {
 		expires = unix(p.ExpiresAt)
 	}
+	root, version := p.Key, 1
+	if p.PrevKey != "" {
+		prev = p.PrevKey
+		err := tx.QueryRowContext(ctx, "SELECT root_key FROM pastes WHERE key = ? AND user_id = ?", p.PrevKey, p.UserID).Scan(&root)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, "SELECT MAX(version) + 1 FROM pastes WHERE user_id = ? AND root_key = ?",
+			p.UserID, root).Scan(&version); err != nil {
+			return err
+		}
+	}
+	now := unix(db.now())
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO pastes (key, user_id, title, language, visibility, created_at, expires_at, size, root_key)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.Key, p.UserID, p.Title, p.Language, p.Visibility, unix(db.now()), expires, p.Size, p.Key)
+		`INSERT INTO pastes (key, user_id, title, language, visibility, created_at, expires_at, size, root_key, version, prev_key)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.Key, p.UserID, p.Title, p.Language, p.Visibility, now, expires, p.Size, root, version, prev)
 	if err != nil {
 		return err
 	}
 	if err := setTags(ctx, tx, p.Key, p.Tags); err != nil {
 		return err
+	}
+	if p.PrevKey != "" && p.DeletePrevious {
+		if err := deletePaste(ctx, tx, p.PrevKey, now); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -565,6 +591,14 @@ func (db *DB) SetDefaultVisibility(ctx context.Context, userID int64, visibility
 // for deletion. It records the deletion in the audit log and returns how
 // many store keys it queued.
 func (db *DB) DeleteUser(ctx context.Context, user *User) (int64, error) {
+	return db.DeleteUserBy(ctx, user, AuditEntry{
+		ActorID: user.ID, ActorLogin: user.Login, Action: "account.delete", Target: userTarget(user.ID),
+	})
+}
+
+// DeleteUserBy is DeleteUser with the audit row given: an admin deleting
+// someone else's account
+func (db *DB) DeleteUserBy(ctx context.Context, user *User, entry AuditEntry) (int64, error) {
 	tx, err := db.W.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -598,9 +632,7 @@ func (db *DB) DeleteUser(ctx context.Context, user *User) (int64, error) {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return 0, ErrNotFound
 	}
-	if err := audit(ctx, tx, db.now(), AuditEntry{
-		ActorID: user.ID, ActorLogin: user.Login, Action: "account.delete", Target: userTarget(user.ID),
-	}); err != nil {
+	if err := audit(ctx, tx, db.now(), entry); err != nil {
 		return 0, err
 	}
 	return queued, tx.Commit()

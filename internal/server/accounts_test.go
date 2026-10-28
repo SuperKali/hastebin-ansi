@@ -53,7 +53,7 @@ func accountsServer(t *testing.T, login bool) (*Server, *accounts.DB) {
 // loginAs stores a session for a GitHub user and returns its cookie
 func loginAs(t *testing.T, db *accounts.DB, githubID int64, login string) *http.Cookie {
 	t.Helper()
-	user, _, err := db.LoginUser(context.Background(), githubID, login, true)
+	user, _, err := db.LoginUser(context.Background(), githubID, login, "", true)
 	require.NoError(t, err)
 	id := make([]byte, 32)
 	copy(id, login)
@@ -128,6 +128,26 @@ func TestAccountsRoutes(t *testing.T) {
 	rec = serve(srv, http.MethodGet, "/api/v1/session", user)
 	require.Contains(t, rec.Body.String(), `"login":"someone"`)
 	require.Contains(t, rec.Body.String(), `"admin":false`)
+	require.Contains(t, rec.Body.String(), `"avatar_url":null`)
+
+	// A stored avatar comes back sized for the 24 px picture, and the
+	// pages that show it load the shared account menu
+	_, err := db.W.Exec("UPDATE users SET avatar_url = ? WHERE github_id = 5", "https://avatars.githubusercontent.com/u/5?v=4")
+	require.NoError(t, err)
+	rec = serve(srv, http.MethodGet, "/api/v1/session", user)
+	var session struct {
+		User map[string]any `json:"user"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &session))
+	require.Equal(t, "https://avatars.githubusercontent.com/u/5?s=64&v=4", session.User["avatar_url"])
+	for _, page := range []string{"/", "/dashboard"} {
+		body := serve(srv, http.MethodGet, page, user).Body.String()
+		require.Contains(t, body, `src="/account-menu.js`, page)
+		require.Contains(t, body, `href="/account-menu.css`, page)
+	}
+	for _, file := range []string{"/account-menu.js", "/account-menu.css"} {
+		require.Equal(t, http.StatusOK, serve(srv, http.MethodGet, file, nil).Code, file)
+	}
 
 	// Unknown API routes are JSON 404s
 	rec = serve(srv, http.MethodGet, "/api/v1/nothing", user)
@@ -177,6 +197,8 @@ func TestAdminStatus(t *testing.T) {
 	rec := serve(srv, http.MethodGet, "/admin", admin)
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), "hastebin admin")
+	require.Contains(t, rec.Body.String(), `src="/account-menu.js`)
+	require.NotContains(t, rec.Body.String(), `class="btn ghost small logout"`)
 	require.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
 	require.NotEmpty(t, rec.Header().Get("Content-Security-Policy"))
 	require.NotContains(t, rec.Body.String(), "<script>")

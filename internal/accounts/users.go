@@ -23,6 +23,9 @@ type User struct {
 	DisabledReason    string
 	DefaultVisibility int
 	AbuseStrikes      int
+
+	// AvatarURL is the GitHub avatar, checked at login, "" when none
+	AvatarURL string
 }
 
 // Disabled reports whether the account is disabled
@@ -31,16 +34,16 @@ func (u *User) Disabled() bool {
 }
 
 const userColumns = `users.id, users.github_id, users.login, users.created_at, users.last_login_at, users.last_seen_at,
-	users.disabled_at, users.disabled_reason, users.default_visibility, users.abuse_strikes`
+	users.disabled_at, users.disabled_reason, users.default_visibility, users.abuse_strikes, users.avatar_url`
 
 // scanUser reads the userColumns of a row
 func scanUser(row interface{ Scan(...any) error }, extra ...any) (*User, error) {
 	var u User
 	var created int64
 	var lastLogin, lastSeen, disabled sql.NullInt64
-	var reason sql.NullString
+	var reason, avatar sql.NullString
 	dest := append([]any{&u.ID, &u.GitHubID, &u.Login, &created, &lastLogin, &lastSeen,
-		&disabled, &reason, &u.DefaultVisibility, &u.AbuseStrikes}, extra...)
+		&disabled, &reason, &u.DefaultVisibility, &u.AbuseStrikes, &avatar}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -52,6 +55,7 @@ func scanUser(row interface{ Scan(...any) error }, extra ...any) (*User, error) 
 	u.LastSeenAt = fromUnix(lastSeen)
 	u.DisabledAt = fromUnix(disabled)
 	u.DisabledReason = reason.String
+	u.AvatarURL = avatar.String
 	return &u, nil
 }
 
@@ -67,13 +71,15 @@ func (db *DB) UserByID(ctx context.Context, id int64) (*User, error) {
 
 // LoginUser records a login of a GitHub account: it creates the account when
 // the GitHub id has none and allowCreate is true, else it refreshes the
-// login name and the login time. created tells which happened. A GitHub id
-// without an account and allowCreate false gives ErrNotFound.
-func (db *DB) LoginUser(ctx context.Context, githubID int64, login string, allowCreate bool) (user *User, created bool, err error) {
+// login name, the avatar and the login time. created tells which happened. A
+// GitHub id without an account and allowCreate false gives ErrNotFound. The
+// caller checks avatarURL; "" stores NULL.
+func (db *DB) LoginUser(ctx context.Context, githubID int64, login, avatarURL string, allowCreate bool) (user *User, created bool, err error) {
 	now := unix(db.now())
+	avatar := sql.NullString{String: avatarURL, Valid: avatarURL != ""}
 	res, err := db.W.ExecContext(ctx,
-		"UPDATE users SET login = ?, last_login_at = ?, last_seen_at = ? WHERE github_id = ?",
-		login, now, now, githubID)
+		"UPDATE users SET login = ?, avatar_url = ?, last_login_at = ?, last_seen_at = ? WHERE github_id = ?",
+		login, avatar, now, now, githubID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -84,10 +90,10 @@ func (db *DB) LoginUser(ctx context.Context, githubID int64, login string, allow
 			return nil, false, ErrNotFound
 		}
 		_, err := db.W.ExecContext(ctx,
-			`INSERT INTO users (github_id, login, created_at, last_login_at, last_seen_at) VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT (github_id) DO UPDATE SET login = excluded.login, last_login_at = excluded.last_login_at,
-				last_seen_at = excluded.last_seen_at`,
-			githubID, login, now, now, now)
+			`INSERT INTO users (github_id, login, avatar_url, created_at, last_login_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT (github_id) DO UPDATE SET login = excluded.login, avatar_url = excluded.avatar_url,
+				last_login_at = excluded.last_login_at, last_seen_at = excluded.last_seen_at`,
+			githubID, login, avatar, now, now, now)
 		if err != nil {
 			return nil, false, err
 		}

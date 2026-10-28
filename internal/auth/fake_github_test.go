@@ -43,7 +43,8 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		clientSecret: "test-secret",
 		codes:        make(map[string]*fakeCode),
 		tokens:       make(map[string]githubAccount),
-		next:         githubAccount{ID: 1001, Login: "octocat", CreatedAt: time.Now().Add(-365 * 24 * time.Hour)},
+		next: githubAccount{ID: 1001, Login: "octocat", CreatedAt: time.Now().Add(-365 * 24 * time.Hour),
+			AvatarURL: "https://avatars.githubusercontent.com/u/1001?v=4"},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login/oauth/authorize", f.authorize)
@@ -164,5 +165,6 @@ func (f *fakeGitHub) user(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"id": u.ID, "login": u.Login, "created_at": u.CreatedAt.UTC().Format(time.RFC3339), "email": "hidden@example.com",
+		"avatar_url": u.AvatarURL,
 	})
 }

@@ -54,7 +54,7 @@ func tokenService(t *testing.T) (*Service, *accounts.DB, *accounts.User, string,
 	t.Cleanup(func() { db.Close() })
 	svc, err := New(db, Config{SessionTTL: time.Hour, SessionIdle: time.Hour, BaseURL: "https://paste.example"})
 	require.NoError(t, err)
-	user, _, err := db.LoginUser(context.Background(), 77, "tokenuser", true)
+	user, _, err := db.LoginUser(context.Background(), 77, "tokenuser", "", true)
 	require.NoError(t, err)
 	tok := NewToken()
 	row, err := db.CreateToken(context.Background(), user.ID, "test", TokenDisplay(tok), HashToken(tok), 20)

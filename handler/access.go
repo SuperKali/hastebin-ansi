@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/armbian/ansi-hastebin/internal/abuse"
 	"github.com/armbian/ansi-hastebin/internal/auth"
 	"github.com/armbian/ansi-hastebin/internal/storage"
 )
@@ -47,6 +48,18 @@ type Meta struct {
 
 	// ServerNow is the server time of the check
 	ServerNow time.Time
+
+	// Private is set for a paste only its owner may read
+	Private bool
+
+	// EditedAt is when the owner last changed the content under the same
+	// link, the zero time for never. Everyone may know it: /raw and
+	// /documents send it as X-Paste-Edited.
+	EditedAt time.Time
+
+	// Language is the language of the paste, "" when unknown. A download
+	// without an extension of its own is named after it.
+	Language string
 
 	// OnDeliver, when set, runs once the content is delivered to a reader
 	// who is not the owner: it counts the view
@@ -111,6 +124,7 @@ func (h *DocumentHandler) gate(w http.ResponseWriter, r *http.Request, ip, key s
 // paste ErrRemoved. A delivered read counts as a view.
 func (h *DocumentHandler) OpenDocumentAs(ctx context.Context, p *auth.Principal, ip, key string, stream, cost int64) (*Document, error) {
 	if left, banned := h.NotFound.Banned(ip); banned {
+		h.Event(abuse.KindNotFoundBan, ip, "mcp read")
 		return nil, &BannedError{RetryAfter: left}
 	}
 	var meta *Meta
@@ -128,8 +142,12 @@ func (h *DocumentHandler) OpenDocumentAs(ctx context.Context, p *auth.Principal,
 	}
 	if errors.Is(err, storage.ErrNotFound) {
 		if left, banned := h.NotFound.Miss(ip); banned {
+			h.Event(abuse.KindNotFoundBan, ip, "mcp read")
 			return nil, &BannedError{RetryAfter: left}
 		}
+	}
+	if errors.Is(err, ErrMemoryBusy) {
+		h.Event(abuse.KindBusy, ip, "mcp read")
 	}
 	if err != nil {
 		return nil, err
@@ -138,18 +156,38 @@ func (h *DocumentHandler) OpenDocumentAs(ctx context.Context, p *auth.Principal,
 	return doc, nil
 }
 
-// ownerJSON is the end of the /documents answer for the owner of a paste:
-// owner, editable_until (null when editing is over) and server_now, in UTC
-// RFC 3339. It is empty for everyone else.
-func ownerJSON(meta *Meta) string {
-	if meta == nil || !meta.Owner {
+// metaJSON is the end of the /documents answer: edited_at for everyone once
+// the content was edited; then for the owner of a paste owner, visibility,
+// editable_until (null when editing is over) and server_now. Times are UTC
+// RFC 3339. It is empty for a paste never edited read by anyone else.
+func metaJSON(meta *Meta) string {
+	if meta == nil {
 		return ""
+	}
+	out := ""
+	if !meta.EditedAt.IsZero() {
+		out += `,"edited_at":"` + meta.EditedAt.UTC().Format(time.RFC3339) + `"`
+	}
+	if !meta.Owner {
+		return out
 	}
 	until := "null"
 	if !meta.EditableUntil.IsZero() {
 		until = `"` + meta.EditableUntil.UTC().Format(time.RFC3339) + `"`
 	}
-	return `,"owner":true,"editable_until":` + until + `,"server_now":"` + meta.ServerNow.UTC().Format(time.RFC3339) + `"`
+	visibility := "link"
+	if meta.Private {
+		visibility = "private"
+	}
+	return out + `,"owner":true,"visibility":"` + visibility + `","editable_until":` + until +
+		`,"server_now":"` + meta.ServerNow.UTC().Format(time.RFC3339) + `"`
+}
+
+// setEdited sends X-Paste-Edited with the time of the last edit, when there was one
+func setEdited(w http.ResponseWriter, meta *Meta) {
+	if meta != nil && !meta.EditedAt.IsZero() {
+		w.Header().Set("X-Paste-Edited", meta.EditedAt.UTC().Format(time.RFC3339))
+	}
 }
 
 // noStoreKeeper keeps Cache-Control on an answer of http.ServeContent,
@@ -184,4 +222,22 @@ func keepNoStore(w http.ResponseWriter) http.ResponseWriter {
 		return w
 	}
 	return &noStoreKeeper{ResponseWriter: w, value: value}
+}
+
+// ReadForModeration reads up to limit bytes of a paste for an admin. It
+// skips the AccessGate and the not-found limiter: the admin API checks who
+// asks and records why before it calls this. The read is charged to ip in
+// the read budget like any other. It returns the bytes and the whole size;
+// a missing paste is storage.ErrNotFound, a full budget ErrMemoryBusy.
+func (h *DocumentHandler) ReadForModeration(ip, key string, limit int64) ([]byte, int64, error) {
+	doc, err := h.openDocument(ip, key, limit, 1)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer doc.Close()
+	data, err := io.ReadAll(io.LimitReader(doc, limit))
+	if err != nil {
+		return nil, 0, err
+	}
+	return data, doc.Size, nil
 }

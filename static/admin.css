@@ -1,0 +1,559 @@
+/* Admin page: Moderation, Users, Abuse and Audit, on top of dashboard.css */
+
+.muted {
+    color: var(--muted);
+}
+
+.chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.chips .chip {
+    margin-left: 0;
+}
+
+/* Moderation */
+
+.lookup {
+    display: flex;
+    gap: 10px;
+    max-width: 820px;
+    margin-bottom: 16px;
+}
+
+.lookup .search {
+    flex: 1 1 auto;
+    max-width: none;
+}
+
+.lookup .search input {
+    height: 40px;
+    font-family: var(--mono);
+    font-size: 13px;
+}
+
+.lookup .search svg {
+    top: 13px;
+}
+
+.lookup .btn {
+    height: 40px;
+}
+
+.mod-empty {
+    max-width: 820px;
+}
+
+.paste-card,
+.content-card {
+    max-width: 820px;
+}
+
+.paste-head {
+    margin-bottom: 14px;
+}
+
+.paste-id {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+}
+
+.paste-key {
+    color: #fff;
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+.paste-chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.paste-chips .chip {
+    margin-left: 0;
+}
+
+.paste-title {
+    margin: 6px 0 0;
+    color: var(--text);
+    overflow-wrap: anywhere;
+}
+
+.paste-rows {
+    padding: 12px 0 2px;
+    border-top: 1px solid var(--line);
+}
+
+.paste-actions {
+    margin-top: 16px;
+}
+
+.paste-hint {
+    margin-top: 12px;
+}
+
+.who {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    min-width: 0;
+}
+
+.who .chip {
+    margin-left: 0;
+}
+
+.rows dd .who {
+    font-family: var(--sans);
+    font-size: 14px;
+}
+
+.content-card {
+    margin-top: 16px;
+}
+
+.content-note {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+.content-view {
+    max-height: 60vh;
+    margin: 0;
+    padding: 12px 14px;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #00232c;
+    color: var(--strong);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 18px;
+    white-space: pre;
+    tab-size: 4;
+}
+
+/* Lists */
+
+.list-card + .list-card,
+.card + .list-card {
+    margin-top: 16px;
+}
+
+.list-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 14px 16px 4px;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.list-title .count {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-weight: 400;
+    letter-spacing: 0;
+}
+
+.list-note {
+    margin: 0;
+    padding: 0 16px 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+}
+
+.list-card .list-foot:has(.pager[hidden]) {
+    display: none;
+}
+
+.empty-line {
+    margin: 0;
+    padding: 28px 16px;
+    color: var(--muted);
+    text-align: center;
+}
+
+table.admin-list th,
+table.admin-list td {
+    vertical-align: middle;
+}
+
+table.admin-list th {
+    position: static;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    background: transparent;
+    border-bottom: 1px solid var(--line);
+    letter-spacing: 0.03em;
+}
+
+table.admin-list td {
+    padding-top: 9px;
+    padding-bottom: 9px;
+    color: var(--text);
+}
+
+table.admin-list td:first-child {
+    color: var(--text);
+    white-space: normal;
+}
+
+table.admin-list tbody tr {
+    transition: background 0.12s ease;
+}
+
+table.admin-list tbody tr:hover {
+    background: rgba(79, 193, 181, 0.04);
+}
+
+table.admin-list tr.off .who-text {
+    opacity: 0.6;
+}
+
+table.admin-list .c-main {
+    min-width: 0;
+    font-family: var(--sans);
+}
+
+table.admin-list .who-text {
+    min-width: 0;
+}
+
+table.admin-list .title {
+    color: var(--strong);
+    font-weight: 600;
+    text-decoration: none;
+}
+
+table.admin-list a.title:hover {
+    color: var(--accent);
+    text-decoration: underline;
+}
+
+table.admin-list .title.untitled {
+    color: var(--muted);
+    font-weight: 400;
+    font-style: italic;
+}
+
+table.admin-list .sub {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 16px;
+}
+
+table.admin-list .c-date {
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+table.admin-list .c-detail {
+    max-width: 360px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+}
+
+table.admin-list .c-act {
+    width: 48px;
+    text-align: right;
+    white-space: nowrap;
+}
+
+table.admin-list .c-act .btn {
+    white-space: nowrap;
+}
+
+table.admin-list .btn {
+    font-family: var(--sans);
+}
+
+table.admin-list .chip {
+    margin-left: 0;
+}
+
+.user-view .toolbar .back {
+    margin-left: 0;
+}
+
+table.admin-list code.addr,
+table.admin-list code.action {
+    color: var(--strong);
+}
+
+table.admin-list .c-target code {
+    color: var(--text);
+    font-size: 12px;
+}
+
+table.admin-list .c-by {
+    font-family: var(--sans);
+}
+
+.sort-field {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Users */
+
+.user-card {
+    margin-bottom: 16px;
+}
+
+.user-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+    margin-bottom: 14px;
+}
+
+.user-who {
+    min-width: 0;
+}
+
+.user-login {
+    margin: 0;
+    color: #fff;
+    font-size: 22px;
+    line-height: 28px;
+    overflow-wrap: anywhere;
+}
+
+.user-ids {
+    margin: 2px 0 0;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+}
+
+.user-chips {
+    margin-left: auto;
+}
+
+.user-rows {
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+}
+
+.user-actions {
+    margin-top: 16px;
+}
+
+.user-actions .hint {
+    margin: 0;
+}
+
+/* Abuse */
+
+.ban-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 10px 12px;
+}
+
+.ban-form .field {
+    flex: 0 0 auto;
+}
+
+.ban-form .field.grow {
+    flex: 1 1 200px;
+}
+
+.ban-form [name="target"] {
+    font-family: var(--mono);
+    font-size: 13px;
+}
+
+.ban-form-card .hint {
+    margin-top: 12px;
+}
+
+/* Reason dialog */
+
+dialog.reason-dialog .field {
+    margin-bottom: 12px;
+}
+
+dialog.reason-dialog textarea {
+    min-height: 64px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #00232c;
+    color: var(--strong);
+    font: inherit;
+    resize: vertical;
+}
+
+dialog.reason-dialog textarea:focus,
+dialog.reason-dialog input:focus {
+    border-color: var(--accent);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(79, 193, 181, 0.2);
+}
+
+dialog.reason-dialog .dialog-error {
+    margin: -4px 0 12px;
+    color: #ff8f88;
+    font-size: 13px;
+}
+
+dialog.reason-dialog .btn.primary {
+    background: var(--accent);
+    color: #002b36;
+}
+
+/* Narrow screens: rows become cards, the labels come from data-label */
+
+@media (max-width: 760px) {
+    .lookup {
+        flex-direction: column;
+    }
+
+    .lookup .search {
+        flex: 0 0 auto;
+        align-self: stretch;
+        width: 100%;
+    }
+
+    .lookup .btn {
+        justify-content: center;
+    }
+
+    .user-head {
+        flex-wrap: nowrap;
+    }
+
+    .user-who {
+        flex: 1 1 0;
+    }
+
+    .user-chips {
+        margin-left: 0;
+    }
+
+    .user-head:has(.user-chips .chip) {
+        flex-wrap: wrap;
+    }
+
+    .user-chips {
+        flex: 1 1 100%;
+        order: 3;
+    }
+
+    .ban-form .field,
+    .ban-form .field.grow {
+        flex: 1 1 100%;
+    }
+
+    .ban-form .btn {
+        flex: 1 1 100%;
+        justify-content: center;
+    }
+
+    .users-filter .sort-field {
+        flex: 1 1 100%;
+    }
+
+    .users-filter .sort-field select {
+        flex: 1 1 auto;
+    }
+
+    table.admin-list thead {
+        display: none;
+    }
+
+    table.admin-list,
+    table.admin-list tbody {
+        display: block;
+    }
+
+    table.admin-list tbody tr {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px 12px;
+        padding: 11px 14px;
+        border-bottom: 1px solid rgba(23, 75, 87, 0.6);
+    }
+
+    table.admin-list tbody tr:last-child {
+        border-bottom: 0;
+    }
+
+    table.admin-list td {
+        padding: 0;
+        border: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 17px;
+    }
+
+    table.admin-list td.c-main {
+        order: 0;
+        flex: 1 1 0;
+        min-width: 0;
+        color: var(--text);
+        font-size: 14px;
+    }
+
+    /* Ends the first line after the actions: the details go below */
+    table.admin-list tbody tr::after {
+        content: "";
+        order: 2;
+        flex: 1 1 100%;
+        height: 0;
+    }
+
+    table.admin-list td.c-act {
+        order: 1;
+        width: auto;
+        margin-left: auto;
+    }
+
+    table.admin-list td:not(.c-main):not(.c-act) {
+        order: 3;
+    }
+
+    table.admin-list td[data-label]::before {
+        content: attr(data-label) " ";
+        color: #5f7d84;
+    }
+
+    table.admin-list td.c-detail {
+        flex: 1 1 100%;
+        max-width: none;
+        color: var(--text);
+    }
+
+    table.audit td.c-target {
+        flex: 1 1 100%;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    table.admin-list tbody tr {
+        transition: none;
+    }
+}

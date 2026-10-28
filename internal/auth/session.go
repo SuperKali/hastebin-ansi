@@ -173,13 +173,24 @@ func (s *Service) RequireSession(next http.Handler) http.Handler {
 // sent, must be the server's own. GET, HEAD and OPTIONS pass. It needs
 // RequireSession first.
 func (s *Service) RequireCSRF(next http.Handler) http.Handler {
+	return s.requireCSRF(next, true)
+}
+
+// RequireCSRFRaw is RequireCSRF for routes whose body is the content of a
+// paste, of any type: X-CSRF-Token and Origin are checked the same way.
+// A form on another site cannot send the header, so it still cannot post.
+func (s *Service) RequireCSRFRaw(next http.Handler) http.Handler {
+	return s.requireCSRF(next, false)
+}
+
+func (s *Service) requireCSRF(next http.Handler, wantJSON bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
 			next.ServeHTTP(w, r)
 			return
 		}
-		if msg := s.checkCSRF(r, FromContext(r.Context())); msg != "" {
+		if msg := s.checkCSRF(r, FromContext(r.Context()), wantJSON); msg != "" {
 			// The route pattern, not the path, which may hold a paste key
 			log.Info().Str("route", routePattern(r)).Str("reason", msg).Msg("Request refused by the CSRF check")
 			WriteError(w, http.StatusForbidden, "csrf", msg)
@@ -199,7 +210,7 @@ func routePattern(r *http.Request) string {
 }
 
 // checkCSRF returns why a state change is refused, "" when it may go on
-func (s *Service) checkCSRF(r *http.Request, p *Principal) string {
+func (s *Service) checkCSRF(r *http.Request, p *Principal, wantJSON bool) string {
 	if p == nil || p.Session == nil {
 		return "No session."
 	}
@@ -209,7 +220,7 @@ func (s *Service) checkCSRF(r *http.Request, p *Principal) string {
 	if origin := r.Header.Get("Origin"); origin != "" && !s.sameOrigin(r, origin) {
 		return "Wrong origin."
 	}
-	if media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || media != "application/json" {
+	if media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); wantJSON && (err != nil || media != "application/json") {
 		return "The body must be JSON."
 	}
 	if !p.ValidCSRF(r.Header.Get("X-CSRF-Token")) {
@@ -292,8 +303,9 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 	})
 }
 
-// handleSession answers GET /api/v1/session: the user, the CSRF token for
-// state changes and the limits, or user null without a session
+// handleSession answers GET /api/v1/session: the user (avatar_url null when
+// there is none), the CSRF token for state changes and the limits, or user
+// null without a session
 func (s *Service) handleSession(w http.ResponseWriter, r *http.Request) {
 	l := lookupFromContext(r.Context())
 	if l != nil && l.err != nil && !errors.Is(l.err, ErrDisabled) {
@@ -303,7 +315,8 @@ func (s *Service) handleSession(w http.ResponseWriter, r *http.Request) {
 	p := FromContext(r.Context())
 	body := map[string]any{"user": nil, "csrf": nil, "limits": nil}
 	if p != nil {
-		body["user"] = map[string]any{"id": p.User.ID, "login": p.User.Login, "admin": s.IsAdmin(p.User.GitHubID)}
+		body["user"] = map[string]any{"id": p.User.ID, "login": p.User.Login, "admin": s.IsAdmin(p.User.GitHubID),
+			"avatar_url": sizedAvatar(p.User.AvatarURL)}
 		body["csrf"] = p.CSRF()
 	}
 	if s.cfg.Limits != nil {

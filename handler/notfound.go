@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -142,6 +143,66 @@ func (l *NotFoundLimiter) Tracked() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return len(l.entries)
+}
+
+// Ban is a client banned by a limiter, and until when
+type Ban struct {
+	// Client is an IPv4 address or an IPv6 /64, in ClientKey form
+	Client string    `json:"client"`
+	Until  time.Time `json:"until"`
+
+	// Used is the bytes stored in the window, for an upload quota
+	Used int64 `json:"used,omitempty"`
+}
+
+// Snapshot returns up to limit clients banned now, the longest ban first
+func (l *NotFoundLimiter) Snapshot(limit int) []Ban {
+	out := []Ban{}
+	if l == nil || limit <= 0 {
+		return out
+	}
+	l.mu.Lock()
+	now := l.now()
+	for _, elem := range l.entries {
+		e := elem.Value.(*notFoundEntry)
+		if e.bannedUntil.After(now) {
+			out = append(out, Ban{Client: e.ip, Until: e.bannedUntil.UTC()})
+		}
+	}
+	l.mu.Unlock()
+	return firstBans(out, limit)
+}
+
+// Unban lifts the ban of a client, in ClientKey form, and forgets its
+// count. It reports whether the client was banned.
+func (l *NotFoundLimiter) Unban(client string) bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	elem, ok := l.entries[client]
+	if !ok {
+		return false
+	}
+	banned := elem.Value.(*notFoundEntry).bannedUntil.After(l.now())
+	l.order.Remove(elem)
+	delete(l.entries, client)
+	return banned
+}
+
+// firstBans sorts bans by end, latest first, then by client, and keeps limit
+func firstBans(list []Ban, limit int) []Ban {
+	sort.Slice(list, func(i, j int) bool {
+		if !list[i].Until.Equal(list[j].Until) {
+			return list[i].Until.After(list[j].Until)
+		}
+		return list[i].Client < list[j].Client
+	})
+	if len(list) > limit {
+		list = list[:limit]
+	}
+	return list
 }
 
 // sweepLocked drops the entries whose window and ban are over, at most once per interval

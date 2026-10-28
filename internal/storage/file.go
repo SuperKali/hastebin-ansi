@@ -343,6 +343,20 @@ func (s *FileStorage) Size(key string) (int64, error) {
 	return info.Size(), nil
 }
 
+// ModTime returns when a paste was last written or read, which its expiry
+// counts from, without refreshing it. A missing or expired key is ErrNotFound.
+func (s *FileStorage) ModTime(key string) (time.Time, error) {
+	name := md5Hex(key)
+	info, err := os.Stat(filepath.Join(s.path, name))
+	if err != nil {
+		return time.Time{}, fileError(err)
+	}
+	if s.expired(name, info, time.Now()) {
+		return time.Time{}, ErrNotFound
+	}
+	return info.ModTime(), nil
+}
+
 // Open returns the paste file for streaming, so it is never loaded whole
 func (s *FileStorage) Open(key string) (io.ReadSeekCloser, time.Time, error) {
 	name := md5Hex(key)

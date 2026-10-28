@@ -229,6 +229,10 @@ type Config struct {
 	// same-link editing off.
 	EditWindow int `yaml:"edit_window"`
 
+	// EditMaxRevisions is how many older contents one registered paste keeps
+	// from same-link edits; past it the owner saves a new version instead
+	EditMaxRevisions int `yaml:"edit_max_revisions"`
+
 	// Storage is the storage backend to use
 	// Available storage backends are: "redis", "file", "memcached", "mongodb", "s3", "postgres"
 	Storage StorageConfig `yaml:"storage"`
@@ -271,6 +275,7 @@ var DefaultConfig = &Config{
 	UserMaxPastes:           10000,
 	MaxTokensPerUser:        20,
 	EditWindow:              600,
+	EditMaxRevisions:        20,
 	Storage: StorageConfig{
 		Type:     "file",
 		FilePath: "data",
@@ -555,6 +560,7 @@ func NewConfig(configFile string) *Config {
 		{"USER_MAX_PASTES", &cfg.UserMaxPastes},
 		{"MAX_TOKENS_PER_USER", &cfg.MaxTokensPerUser},
 		{"EDIT_WINDOW", &cfg.EditWindow},
+		{"EDIT_MAX_REVISIONS", &cfg.EditMaxRevisions},
 	} {
 		if value := os.Getenv(setting.env); value != "" {
 			valueInt, err := strconv.Atoi(value)
@@ -818,6 +824,12 @@ func NewConfig(configFile string) *Config {
 	if cfg.EditWindow < 0 {
 		log.Fatal().Int("edit_window", cfg.EditWindow).Msg("edit_window must be 0 (no same-link editing) or more seconds")
 	}
+	if cfg.EditMaxRevisions == 0 {
+		cfg.EditMaxRevisions = DefaultConfig.EditMaxRevisions
+	}
+	if cfg.EditMaxRevisions < 1 || cfg.EditMaxRevisions > 1000 {
+		log.Fatal().Int("edit_max_revisions", cfg.EditMaxRevisions).Msg("edit_max_revisions must be 1 to 1000 (0 means the default 20)")
+	}
 
 	for _, id := range cfg.AdminGitHubIDs {
 		if id <= 0 {
@@ -927,5 +939,6 @@ func (c *Config) Effective() []Setting {
 		{"user_max_pastes", c.UserMaxPastes},
 		{"max_tokens_per_user", c.MaxTokensPerUser},
 		{"edit_window", c.EditWindow},
+		{"edit_max_revisions", c.EditMaxRevisions},
 	}
 }

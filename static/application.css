@@ -266,7 +266,7 @@ body.mcp-on #messages {
     color: #fff;
 }
 
-/* Account button: log in with GitHub, or open your pastes */
+/* Account: the avatar and its menu (account-menu.css), or sign in */
 
 body.account-on #messages {
     right: 170px;
@@ -278,37 +278,8 @@ body.mcp-on.account-on #messages {
 
 #box2 .function.account {
     background: none;
-    color: #255662;
     padding: 0;
     vertical-align: top;
-    text-decoration: none;
-    transition: color 0.15s ease;
-}
-
-#box2 .function.account svg {
-    display: block;
-    margin: 8px auto 0;
-    width: 21px;
-    height: 21px;
-}
-
-#box2 .function.enabled.account {
-    color: #8fbcc8;
-}
-
-#box2 .function.enabled.account:hover {
-    color: #fff;
-}
-
-#box2 .account .account-dot {
-    position: absolute;
-    top: 6px;
-    right: 4px;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #859900;
-    box-shadow: 0 0 0 2px #08323c;
 }
 
 /* Notice for pastes too large to highlight */

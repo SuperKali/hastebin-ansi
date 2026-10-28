@@ -1,0 +1,512 @@
+/* Account menu: shared by the paste page, the dashboard and the admin page.
+   Solarized dark, Fira Code for the login. Needs no other stylesheet. */
+
+.acct,
+.acct-signin {
+    --acct-panel: #052f3a;
+    --acct-line: #174b57;
+    --acct-text: #c4dce3;
+    --acct-muted: #93a1a1;
+    --acct-strong: #fdf6e3;
+    --acct-accent: #4fc1b5;
+    --acct-bad: #ff8f88;
+    --acct-mono: 'Fira Code', ui-monospace, monospace;
+    --acct-sans: Helvetica, Arial, sans-serif;
+}
+
+.acct {
+    position: relative;
+    display: inline-block;
+    font-family: var(--acct-sans);
+    font-size: 13px;
+    line-height: 18px;
+    text-align: left;
+}
+
+.acct-sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* The button: avatar, login, caret */
+
+.acct-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 34px;
+    max-width: 260px;
+    margin: 0;
+    padding: 0 8px 0 4px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--acct-text);
+    font: inherit;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.acct-button:hover {
+    border-color: var(--acct-line);
+    background: rgba(23, 75, 87, 0.55);
+    color: #fff;
+}
+
+.acct-open .acct-button {
+    border-color: rgba(79, 193, 181, 0.45);
+    background: var(--acct-line);
+    color: #fff;
+}
+
+.acct-button:focus {
+    outline: none;
+}
+
+.acct-button:focus-visible {
+    outline: 2px solid var(--acct-accent);
+    outline-offset: 2px;
+}
+
+.acct-login {
+    min-width: 0;
+    overflow: hidden;
+    font-family: var(--acct-mono);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.acct-caret {
+    flex: none;
+    color: var(--acct-muted);
+    transition: transform 0.12s ease, color 0.12s ease;
+}
+
+.acct-button:hover .acct-caret,
+.acct-open .acct-caret {
+    color: var(--acct-accent);
+}
+
+.acct-open .acct-caret {
+    transform: rotate(180deg);
+}
+
+/* Avatars: the letter sits under the picture and stays when it fails */
+
+.acct-avatar {
+    position: relative;
+    flex: none;
+    display: inline-block;
+    overflow: hidden;
+    border-radius: 50%;
+}
+
+.acct-avatar-24 {
+    width: 24px;
+    height: 24px;
+    box-shadow: 0 0 0 1.5px rgba(79, 193, 181, 0.5);
+}
+
+.acct-avatar-40 {
+    width: 40px;
+    height: 40px;
+    box-shadow: 0 0 0 2px var(--acct-panel), 0 0 0 3.5px rgba(79, 193, 181, 0.75);
+}
+
+.acct-avatar img {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    opacity: 0;
+    transition: opacity 0.16s ease;
+}
+
+.acct-avatar.acct-loaded img {
+    opacity: 1;
+}
+
+.acct-letter {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    color: var(--acct-strong);
+    font-family: var(--acct-mono);
+    font-weight: 600;
+    user-select: none;
+}
+
+.acct-avatar-24 .acct-letter {
+    font-size: 12px;
+}
+
+.acct-avatar-40 .acct-letter {
+    font-size: 18px;
+}
+
+.acct-hue-0 { background: linear-gradient(140deg, #2aa198, #0f5f63); }
+.acct-hue-1 { background: linear-gradient(140deg, #268bd2, #134a73); }
+.acct-hue-2 { background: linear-gradient(140deg, #6c71c4, #393c78); }
+.acct-hue-3 { background: linear-gradient(140deg, #d33682, #74173f); }
+.acct-hue-4 { background: linear-gradient(140deg, #cb4b16, #6d2508); }
+.acct-hue-5 { background: linear-gradient(140deg, #b58900, #5e4700); }
+
+/* The panel */
+
+.acct-panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 1100;
+    width: 264px;
+    max-width: calc(100vw - 16px);
+    padding: 6px;
+    border: 1px solid var(--acct-line);
+    border-radius: 12px;
+    background: linear-gradient(180deg, rgba(79, 193, 181, 0.06), transparent 72px), var(--acct-panel);
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3);
+    color: var(--acct-text);
+    font-family: var(--acct-sans);
+    font-size: 13px;
+    line-height: 18px;
+    text-align: left;
+    transform-origin: top right;
+    animation: acct-pop 0.12s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes acct-pop {
+    from { opacity: 0; transform: translateY(-4px) scale(0.96); }
+}
+
+.acct-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 6px;
+    padding: 10px 10px 12px;
+    border-bottom: 1px solid var(--acct-line);
+}
+
+.acct-who {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px 8px;
+    min-width: 0;
+}
+
+.acct-name {
+    max-width: 100%;
+    overflow: hidden;
+    color: var(--acct-strong);
+    font-family: var(--acct-mono);
+    font-size: 14px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.acct-badge {
+    padding: 0 6px;
+    border: 1px solid rgba(79, 193, 181, 0.4);
+    border-radius: 999px;
+    background: rgba(79, 193, 181, 0.12);
+    color: var(--acct-accent);
+    font-family: var(--acct-mono);
+    font-size: 10px;
+    line-height: 16px;
+    letter-spacing: 0.04em;
+}
+
+.acct-via {
+    display: flex;
+    flex-basis: 100%;
+    align-items: center;
+    gap: 6px;
+    color: var(--acct-muted);
+    font-size: 12px;
+}
+
+.acct-via svg {
+    opacity: 0.8;
+}
+
+.acct-menu {
+    display: flex;
+    flex-direction: column;
+}
+
+.acct-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 34px;
+    margin: 0;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: var(--acct-text);
+    font: inherit;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background 0.1s ease, color 0.1s ease;
+}
+
+.acct-item svg {
+    flex: none;
+    color: var(--acct-muted);
+    transition: color 0.1s ease;
+}
+
+.acct-item:hover,
+.acct-item:focus {
+    outline: none;
+    background: var(--acct-line);
+    color: #fff;
+}
+
+.acct-item:hover svg,
+.acct-item:focus svg {
+    color: var(--acct-accent);
+}
+
+.acct-item:focus-visible {
+    box-shadow: inset 0 0 0 1.5px var(--acct-accent);
+}
+
+.acct-item[aria-current="page"] {
+    color: #fff;
+}
+
+.acct-item[aria-current="page"] svg {
+    color: var(--acct-accent);
+}
+
+.acct-item[aria-current="page"]::after {
+    content: "";
+    width: 6px;
+    height: 6px;
+    margin-left: auto;
+    border-radius: 50%;
+    background: var(--acct-accent);
+    box-shadow: 0 0 0 3px rgba(79, 193, 181, 0.18);
+}
+
+.acct-sep {
+    height: 1px;
+    margin: 6px 4px;
+    background: var(--acct-line);
+}
+
+.acct-logout:hover,
+.acct-logout:focus {
+    background: rgba(220, 50, 47, 0.16);
+    color: #ffc2bd;
+}
+
+.acct-logout:hover svg,
+.acct-logout:focus svg {
+    color: var(--acct-bad);
+}
+
+.acct-logout[disabled] {
+    opacity: 0.6;
+    cursor: progress;
+}
+
+.acct-error {
+    margin: 6px 10px 4px;
+    color: var(--acct-bad);
+    font-size: 12px;
+}
+
+/* Signed out: a plain link to the GitHub login */
+
+.acct-signin {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 32px;
+    padding: 0 14px 0 12px;
+    border: 1px solid var(--acct-line);
+    border-radius: 999px;
+    color: var(--acct-text);
+    font-family: var(--acct-sans);
+    font-size: 13px;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.acct-signin:hover {
+    border-color: rgba(79, 193, 181, 0.5);
+    background: var(--acct-line);
+    color: #fff;
+}
+
+.acct-signin:focus-visible {
+    outline: 2px solid var(--acct-accent);
+    outline-offset: 2px;
+}
+
+/* Compact: the icon bar of the paste page shows the avatar only */
+
+.acct.acct-compact {
+    display: block;
+}
+
+.acct-compact .acct-button {
+    justify-content: center;
+    width: 32px;
+    height: 37px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+}
+
+.acct-compact .acct-button:hover,
+.acct-compact.acct-open .acct-button {
+    background: transparent;
+}
+
+.acct-compact .acct-button:focus-visible {
+    outline-offset: -3px;
+}
+
+.acct-compact .acct-login,
+.acct-compact .acct-caret {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+}
+
+.acct-compact .acct-avatar-24 {
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.acct-compact .acct-button:hover .acct-avatar-24,
+.acct-compact.acct-open .acct-avatar-24 {
+    box-shadow: 0 0 0 2px var(--acct-accent);
+}
+
+.acct-compact .acct-panel {
+    top: 100%;
+    right: -5px;
+}
+
+.acct-signin.acct-compact {
+    justify-content: center;
+    width: 32px;
+    height: 37px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    color: #8fbcc8;
+}
+
+.acct-signin.acct-compact:hover {
+    background: transparent;
+    color: #fff;
+}
+
+.acct-signin.acct-compact:focus-visible {
+    outline-offset: -3px;
+}
+
+/* Phones: the panel spans the width under the bar, over a dimmed page.
+   Sized from the top, not with bottom: 0, as a bar with backdrop-filter
+   holds its fixed children. */
+
+.acct-sheet::before {
+    content: "";
+    position: fixed;
+    top: var(--acct-top, 0);
+    left: 0;
+    right: 0;
+    z-index: 1099;
+    height: 100vh;
+    background: rgba(0, 18, 24, 0.6);
+    animation: acct-fade 0.12s ease-out both;
+}
+
+@keyframes acct-fade {
+    from { opacity: 0; }
+}
+
+.acct-sheet .acct-panel {
+    position: fixed;
+    top: var(--acct-top, 0);
+    left: 0;
+    right: 0;
+    width: auto;
+    max-width: none;
+    padding: 6px 10px 10px;
+    border-width: 0 0 1px;
+    border-radius: 0 0 16px 16px;
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.55);
+    transform-origin: top center;
+    animation-name: acct-drop;
+}
+
+@keyframes acct-drop {
+    from { opacity: 0; transform: translateY(-6px); }
+}
+
+.acct-sheet .acct-item {
+    height: 44px;
+    font-size: 15px;
+}
+
+.acct-sheet .acct-head {
+    padding: 12px 10px 14px;
+}
+
+@media (max-width: 760px) {
+    .acct:not(.acct-compact) .acct-login {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+    }
+
+    .acct:not(.acct-compact) .acct-button {
+        gap: 4px;
+        padding: 0 6px 0 4px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .acct-panel,
+    .acct-sheet .acct-panel,
+    .acct-sheet::before {
+        animation: none;
+    }
+
+    .acct-button,
+    .acct-caret,
+    .acct-item,
+    .acct-item svg,
+    .acct-avatar img,
+    .acct-compact .acct-avatar-24,
+    .acct-signin {
+        transition: none;
+    }
+}

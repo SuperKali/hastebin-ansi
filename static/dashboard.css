@@ -111,33 +111,6 @@ a:hover {
     border-bottom-color: var(--accent);
 }
 
-.who {
-    margin-left: auto;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--muted);
-    font-family: var(--mono);
-    font-size: 13px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.who::before {
-    content: "";
-    flex: none;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--ok);
-    box-shadow: 0 0 0 3px rgba(133, 153, 0, 0.2);
-}
-
-.who:empty {
-    display: none;
-}
-
 /* Page body */
 
 main {
@@ -490,10 +463,6 @@ tr:last-child td {
     .hero {
         padding: 24px 18px 20px;
     }
-
-    .who {
-        max-width: 38vw;
-    }
 }
 
 /* ---- Dashboard ---- */
@@ -545,10 +514,6 @@ main:focus {
     align-items: center;
     gap: 10px;
     min-width: 0;
-}
-
-.top-end .who {
-    margin-left: 0;
 }
 
 .tabs a {
@@ -1419,10 +1384,6 @@ dialog.confirm p {
     .tabs a svg {
         width: 18px;
         height: 18px;
-    }
-
-    .top-end .who {
-        display: none;
     }
 
     .top {

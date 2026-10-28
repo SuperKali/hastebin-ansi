@@ -111,7 +111,8 @@ func (g *Gate) Check(ctx context.Context, key string, p *auth.Principal, op hand
 		return nil, handler.ErrDenied
 	}
 
-	meta := &handler.Meta{Owner: owner, ServerNow: now}
+	meta := &handler.Meta{Owner: owner, ServerNow: now, Private: a.Visibility == accounts.VisibilityPrivate,
+		EditedAt: a.EditedAt, Language: a.Language}
 	if owner {
 		meta.EditableUntil = g.editableUntil(a, now)
 		return meta, nil
@@ -119,9 +120,10 @@ func (g *Gate) Check(ctx context.Context, key string, p *auth.Principal, op hand
 	if op != handler.OpRead {
 		return meta, nil
 	}
-	if err := g.markSeen(ctx, key, a, now); err != nil {
+	if err := g.closeWindow(ctx, key, a, now); err != nil {
 		return nil, err
 	}
+	meta.EditedAt = a.EditedAt
 	views := g.Views
 	meta.OnDeliver = func() { views.Add(key, g.now()) }
 	return meta, nil
@@ -140,28 +142,43 @@ func (g *Gate) editableUntil(a *accounts.Access, now time.Time) time.Time {
 	return until
 }
 
-// markSeen ends the edit window of a paste on its first read by someone
+// editGrace is how long past the end of the edit window a read by someone
+// other than the owner still waits on the key lock: an edit that passed its
+// check just before the end may be swapping the content in. Such a swap
+// takes seconds; after the grace nothing is locked.
+const editGrace = 5 * time.Minute
+
+// closeWindow ends the edit window of a paste on its first read by someone
 // other than the owner: under the key lock, seen_at is checked again and
-// written. Past the window nothing is locked or written.
-func (g *Gate) markSeen(ctx context.Context, key string, a *accounts.Access, now time.Time) error {
-	if g.editableUntil(a, now).IsZero() {
+// written, so no edit can start once the content may have gone out. Just
+// past the window the read only waits for an edit in progress to finish;
+// later nothing is locked or written. a.EditedAt is read again under the
+// lock, as an edit may have finished meanwhile.
+func (g *Gate) closeWindow(ctx context.Context, key string, a *accounts.Access, now time.Time) error {
+	if g.EditWindow <= 0 || !a.SeenAt.IsZero() {
+		return nil
+	}
+	end := a.CreatedAt.Add(g.EditWindow)
+	if !now.Before(end.Add(editGrace)) {
 		return nil
 	}
 	unlock := g.Locks.Lock(key)
 	defer unlock()
-	seen, err := g.DB.SeenAt(ctx, key)
+	seen, edited, err := g.DB.EditMarks(ctx, key)
 	if errors.Is(err, accounts.ErrNotFound) {
 		// Deleted meanwhile: the store read answers for it
 		return nil
 	}
-	if err != nil || !seen.IsZero() {
+	if err != nil {
 		return err
+	}
+	a.EditedAt = edited
+	if !seen.IsZero() || !now.Before(end) {
+		return nil
 	}
 	g.seenWrites.Add(1)
-	if _, err := g.DB.MarkSeen(ctx, key, now); err != nil {
-		return err
-	}
-	return nil
+	_, err = g.DB.MarkSeen(ctx, key, now)
+	return err
 }
 
 // Readers tells who reads a paste, for handler.DocumentHandler.Readers: a
@@ -194,4 +211,25 @@ func (d *Handler) Readers(w http.ResponseWriter, r *http.Request) (*auth.Princip
 		writeMessage(w, http.StatusInternalServerError, "Error retrieving document.")
 	}
 	return nil, false
+}
+
+// ModeratorRead records the content view of an admin who is not the owner
+// as a read by someone else, whatever the visibility: the first one inside
+// the edit window ends it, under the key lock, before the content opens,
+// and it counts as a view. A key without a row, anonymous or missing, has
+// nothing to record. The caller checked the tombstone already.
+func (g *Gate) ModeratorRead(ctx context.Context, key string, adminID int64) error {
+	a, err := g.DB.AccessOf(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !a.Registered || a.UserID == adminID {
+		return nil
+	}
+	now := g.now()
+	if err := g.closeWindow(ctx, key, a, now); err != nil {
+		return err
+	}
+	g.Views.Add(key, now)
+	return nil
 }

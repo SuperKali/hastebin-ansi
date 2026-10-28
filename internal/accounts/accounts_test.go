@@ -33,7 +33,7 @@ func TestOpenCreatesPrivateFiles(t *testing.T) {
 	require.True(t, Exists(path))
 
 	// A write makes sure the WAL is in use
-	_, _, err = db.LoginUser(context.Background(), 1, "octocat", true)
+	_, _, err = db.LoginUser(context.Background(), 1, "octocat", "", true)
 	require.NoError(t, err)
 
 	for _, name := range []string{path, path + "-wal", path + "-shm"} {
@@ -86,7 +86,7 @@ func TestMigrations(t *testing.T) {
 		var name string
 		require.NoError(t, db.R.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&name), table)
 	}
-	_, _, err = db.LoginUser(context.Background(), 7, "seven", true)
+	_, _, err = db.LoginUser(context.Background(), 7, "seven", "", true)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
 
@@ -102,6 +102,59 @@ func TestMigrations(t *testing.T) {
 		require.Equal(t, "seven", user.Login)
 		require.NoError(t, db.Close())
 	}
+}
+
+// TestMigrationFromFirstSchema upgrades a database written by a server that
+// knew only 0001: the users keep their data and get an empty avatar
+func TestMigrationFromFirstSchema(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "hastebin.db")
+	first, err := migrationFS.ReadFile("migrations/0001_init.sql")
+	require.NoError(t, err)
+
+	old, err := open(path, true)
+	require.NoError(t, err)
+	_, err = old.W.Exec(string(first))
+	require.NoError(t, err)
+	_, err = old.W.Exec("PRAGMA user_version = 1")
+	require.NoError(t, err)
+	_, err = old.W.Exec(`INSERT INTO users (github_id, login, created_at, last_login_at, default_visibility, abuse_strikes)
+		VALUES (42, 'oldtimer', 1700000000, 1700000100, 1, 2)`)
+	require.NoError(t, err)
+	_, err = old.W.Exec(`INSERT INTO pastes (key, user_id, title, created_at, size, root_key)
+		VALUES ('abc', (SELECT id FROM users WHERE github_id = 42), 'kept', 1700000200, 12, 'abc')`)
+	require.NoError(t, err)
+	require.NoError(t, old.Close())
+
+	db, err := Open(path)
+	require.NoError(t, err)
+	defer db.Close()
+	version, err := db.UserVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, SchemaVersion(), version)
+	require.GreaterOrEqual(t, version, 2)
+
+	user, err := db.UserByGitHubID(ctx, 42)
+	require.NoError(t, err)
+	require.Equal(t, "oldtimer", user.Login)
+	require.Equal(t, time.Unix(1700000000, 0).UTC(), user.CreatedAt)
+	require.Equal(t, time.Unix(1700000100, 0).UTC(), user.LastLoginAt)
+	require.Equal(t, 1, user.DefaultVisibility)
+	require.Equal(t, 2, user.AbuseStrikes)
+	require.Empty(t, user.AvatarURL)
+	var avatar *string
+	require.NoError(t, db.R.QueryRow("SELECT avatar_url FROM users WHERE github_id = 42").Scan(&avatar))
+	require.Nil(t, avatar)
+	var title string
+	require.NoError(t, db.R.QueryRow("SELECT title FROM pastes WHERE key = 'abc'").Scan(&title))
+	require.Equal(t, "kept", title)
+
+	// The next login stores the avatar on the same account
+	again, created, err := db.LoginUser(ctx, 42, "oldtimer", "https://avatars.githubusercontent.com/u/42?v=4", false)
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, user.ID, again.ID)
+	require.Equal(t, "https://avatars.githubusercontent.com/u/42?v=4", again.AvatarURL)
 }
 
 func TestOpenNewerDatabaseFails(t *testing.T) {
@@ -124,10 +177,10 @@ func TestLoginUser(t *testing.T) {
 	db.now = func() time.Time { return now }
 
 	// Without allowCreate an unknown id is not registered
-	_, _, err := db.LoginUser(ctx, 100, "alice", false)
+	_, _, err := db.LoginUser(ctx, 100, "alice", "", false)
 	require.ErrorIs(t, err, ErrNotFound)
 
-	alice, created, err := db.LoginUser(ctx, 100, "alice", true)
+	alice, created, err := db.LoginUser(ctx, 100, "alice", "", true)
 	require.NoError(t, err)
 	require.True(t, created)
 	require.Equal(t, "alice", alice.Login)
@@ -135,15 +188,31 @@ func TestLoginUser(t *testing.T) {
 
 	// A rename on GitHub keeps the account and refreshes the login
 	now = now.Add(time.Hour)
-	renamed, created, err := db.LoginUser(ctx, 100, "alice2", false)
+	renamed, created, err := db.LoginUser(ctx, 100, "alice2", "", false)
 	require.NoError(t, err)
 	require.False(t, created)
 	require.Equal(t, alice.ID, renamed.ID)
 	require.Equal(t, "alice2", renamed.Login)
 	require.Equal(t, now.UTC(), renamed.LastLoginAt)
 
+	require.Empty(t, renamed.AvatarURL)
+
+	// The avatar is stored at login and refreshed at each one, NULL when gone
+	withAvatar, _, err := db.LoginUser(ctx, 100, "alice2", "https://avatars.githubusercontent.com/u/100?v=4", false)
+	require.NoError(t, err)
+	require.Equal(t, "https://avatars.githubusercontent.com/u/100?v=4", withAvatar.AvatarURL)
+	byID, err := db.UserByID(ctx, alice.ID)
+	require.NoError(t, err)
+	require.Equal(t, withAvatar.AvatarURL, byID.AvatarURL)
+	cleared, _, err := db.LoginUser(ctx, 100, "alice2", "", false)
+	require.NoError(t, err)
+	require.Empty(t, cleared.AvatarURL)
+	var avatar *string
+	require.NoError(t, db.R.QueryRow("SELECT avatar_url FROM users WHERE id = ?", alice.ID).Scan(&avatar))
+	require.Nil(t, avatar)
+
 	// Someone else taking the old login name gets a different account
-	other, created, err := db.LoginUser(ctx, 200, "alice", true)
+	other, created, err := db.LoginUser(ctx, 200, "alice", "", true)
 	require.NoError(t, err)
 	require.True(t, created)
 	require.NotEqual(t, alice.ID, other.ID)
@@ -166,7 +235,7 @@ func TestSessions(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	db.now = func() time.Time { return now }
 
-	user, _, err := db.LoginUser(ctx, 1, "octocat", true)
+	user, _, err := db.LoginUser(ctx, 1, "octocat", "", true)
 	require.NoError(t, err)
 	hash := sha256.Sum256([]byte("cookie"))
 	require.NoError(t, db.CreateSession(ctx, hash[:], user.ID, []byte("csrf"), now.Add(time.Hour)))
@@ -210,9 +279,9 @@ func TestSessions(t *testing.T) {
 func TestLogoutAllAndAudit(t *testing.T) {
 	ctx := context.Background()
 	db := openTest(t)
-	user, _, err := db.LoginUser(ctx, 1, "octocat", true)
+	user, _, err := db.LoginUser(ctx, 1, "octocat", "", true)
 	require.NoError(t, err)
-	other, _, err := db.LoginUser(ctx, 2, "hubot", true)
+	other, _, err := db.LoginUser(ctx, 2, "hubot", "", true)
 	require.NoError(t, err)
 	for i, id := range []int64{user.ID, user.ID, other.ID} {
 		hash := sha256.Sum256([]byte{byte(i)})
@@ -277,7 +346,7 @@ func TestBackupWhileWriting(t *testing.T) {
 				return
 			default:
 			}
-			_, _, err := db.LoginUser(ctx, i, fmt.Sprintf("user%d", i), true)
+			_, _, err := db.LoginUser(ctx, i, fmt.Sprintf("user%d", i), "", true)
 			if err != nil {
 				t.Errorf("write during backup: %v", err)
 				return

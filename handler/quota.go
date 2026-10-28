@@ -56,9 +56,16 @@ type UploadQuota struct {
 }
 
 type quotaEntry struct {
-	client string
-	start  time.Time // start of the counting window
-	used   int64
+	client  string
+	start   time.Time // start of the counting window
+	used    int64
+	refused bool // an upload was refused in this window
+}
+
+// blocked reports whether the client used up its quota, or had an upload
+// refused, in a window that is not over at now
+func (q *UploadQuota) blocked(e *quotaEntry, now time.Time) bool {
+	return e.start.Add(q.window).After(now) && (e.used >= q.limit || e.refused)
 }
 
 // NewUploadQuota lets each client store limit bytes per window. limit <= 0 returns nil, which never refuses.
@@ -126,9 +133,10 @@ func (q *UploadQuota) Charge(ip string, n int64) (time.Duration, bool) {
 	}
 
 	if now.Sub(e.start) >= q.window {
-		e.start, e.used = now, 0
+		e.start, e.used, e.refused = now, 0, false
 	}
 	if e.used+n > q.limit {
+		e.refused = true
 		quotaRefused.Inc()
 		log.Warn().Str("client", client).Int64("used", e.used).Int64("size", n).Int64("quota", q.limit).
 			Msg("Upload refused, the client used up its upload quota")
@@ -159,6 +167,44 @@ func (q *UploadQuota) Tracked() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.entries)
+}
+
+// Snapshot returns up to limit clients that used up their quota, or had an
+// upload refused, and wait for their window to end, the longest wait first
+func (q *UploadQuota) Snapshot(limit int) []Ban {
+	out := []Ban{}
+	if q == nil || limit <= 0 {
+		return out
+	}
+	q.mu.Lock()
+	now := q.now()
+	for _, elem := range q.entries {
+		e := elem.Value.(*quotaEntry)
+		if q.blocked(e, now) {
+			out = append(out, Ban{Client: e.client, Until: e.start.Add(q.window).UTC(), Used: e.used})
+		}
+	}
+	q.mu.Unlock()
+	return firstBans(out, limit)
+}
+
+// Reset forgets what a client, in ClientKey form or the QuotaKey of an
+// account, stored in its window, and reports whether it was blocked
+func (q *UploadQuota) Reset(client string) bool {
+	if q == nil {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	elem, ok := q.entries[client]
+	if !ok {
+		return false
+	}
+	e := elem.Value.(*quotaEntry)
+	blocked := q.blocked(e, q.now())
+	q.order.Remove(elem)
+	delete(q.entries, client)
+	return blocked
 }
 
 // sweepLocked drops the entries whose window is over, at most once per interval

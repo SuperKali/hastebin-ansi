@@ -18,6 +18,7 @@ import (
 
 	"github.com/armbian/ansi-hastebin/config"
 	"github.com/armbian/ansi-hastebin/handler"
+	"github.com/armbian/ansi-hastebin/internal/abuse"
 	"github.com/armbian/ansi-hastebin/internal/accounts"
 	"github.com/armbian/ansi-hastebin/internal/admin"
 	"github.com/armbian/ansi-hastebin/internal/auth"
@@ -37,7 +38,7 @@ const contentSecurityPolicy = "default-src 'self'; " +
 	"script-src 'self' https://cdnjs.cloudflare.com; " +
 	"style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; " +
 	"font-src 'self' https://cdn.jsdelivr.net; " +
-	"img-src 'self' data:; " +
+	"img-src 'self' data: https://avatars.githubusercontent.com; " +
 	"connect-src 'self'; " +
 	"frame-ancestors 'none'; " +
 	"base-uri 'none'; " +
@@ -74,6 +75,11 @@ type Server struct {
 
 	// stopAccounts stops the session sweeper
 	stopAccounts context.CancelFunc
+
+	// events are the recent refusals for the admin page; bans the manual
+	// bans, nil when accounts are off
+	events *abuse.Events
+	bans   *abuse.Bans
 
 	// Version is the build version, logged at start and shown in /api/info
 	Version string
@@ -169,11 +175,17 @@ func (s *Server) newAuth(mcpMaxLength int) *auth.Service {
 }
 
 func (s *Server) RegisterRoutes() {
-	// Register middlewares. The real IP middleware runs first so the in-flight
-	// limit, the logger and the rate limiter see the resolved client address.
+	// Register middlewares. The real IP middleware runs first so the manual
+	// bans, the in-flight limit, the logger and the rate limiter see the
+	// resolved client address.
 	inflight := handler.NewInflightLimiter(s.config.MaxInflightPerClient)
+	s.events = abuse.NewEvents()
+	if s.Accounts != nil {
+		s.bans = s.loadBans()
+	}
 	s.mux.Use(realIPMiddleware(s.trustedProxies, s.realIPHeader))
-	s.mux.Use(inflightMiddleware(inflight))
+	s.mux.Use(manualBanMiddleware(s.bans))
+	s.mux.Use(inflightMiddleware(inflight, s.events))
 	s.mux.Use(accessLogger())
 	s.mux.Use(middleware.Recoverer)
 	s.mux.Use(securityHeadersMiddleware)
@@ -181,7 +193,11 @@ func (s *Server) RegisterRoutes() {
 	// Rate limiter, keyed by r.RemoteAddr as resolved by realIPMiddleware
 	if s.config.RateLimiting.Enable {
 		limit, window := rateLimitSettings(s.config.RateLimiting)
-		s.mux.Use(httprate.LimitBy(limit, window, keyByRemoteIP))
+		events := s.events
+		s.mux.Use(httprate.LimitBy(limit, window, keyByRemoteIP, httprate.WithLimitHandler(func(w http.ResponseWriter, r *http.Request) {
+			events.Record(abuse.KindRateLimit, handler.ClientKey(handler.ClientIP(r)), "")
+			http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
+		})))
 	}
 
 	// Metrics live on the separate metrics_addr listener; answer 404 here
@@ -191,6 +207,7 @@ func (s *Server) RegisterRoutes() {
 	// Register document handler
 	documentHandler := handler.NewDocumentHandler(s.config.KeyLength, s.config.MaxLength, s.storage, s.keyGenerator)
 	documentHandler.BaseURL = s.config.BaseURL
+	documentHandler.Events = s.events
 	documentHandler.LimitUploads(s.config.MaxConcurrentUploads)
 	documentHandler.LimitUploadsPerIP(s.config.MaxUploadsPerIP)
 	documentHandler.SetMemoryBudget(int64(s.config.MemoryBudget))
@@ -223,11 +240,20 @@ func (s *Server) RegisterRoutes() {
 			MaxLength:            mcpMaxLength,
 			MaxInflightPerClient: s.config.MCPMaxInflightPerClient,
 			Bearer:               bearer,
+			Accounts:             s.Accounts,
+			User: mcpserver.UserLimits{
+				MaxLength: s.config.RegisteredMaxLength,
+				MaxPastes: int64(s.config.UserMaxPastes),
+				MaxBytes:  s.config.UserStorageLimit,
+			},
 		})
 		s.mux.Handle("/mcp", mcpHandler)
 	} else {
 		s.mux.Handle("/mcp", http.NotFoundHandler())
 	}
+	// Reserved for the OAuth MCP endpoint, see mcpserver.UserPath
+	s.mux.Handle(mcpserver.UserPath, http.NotFoundHandler())
+	s.mux.Handle(mcpserver.UserPath+"/*", http.NotFoundHandler())
 	log.Info().Bool("mcp", s.config.MCPEnable).Int("mcp_max_length", mcpMaxLength).
 		Int("max_concurrent_uploads", s.config.MaxConcurrentUploads).
 		Int("max_uploads_per_ip", s.config.MaxUploadsPerIP).
@@ -252,19 +278,27 @@ func (s *Server) RegisterRoutes() {
 			UploadQuota: int64(s.config.RegisteredUploadQuota),
 			MaxTokens:   s.config.MaxTokensPerUser,
 		}, s.drainer)
+		dash.Events = s.events
+		// Edits and the reads that end the edit window share one lock per key
+		locks := &dashboard.KeyLocks{}
+		dash.Docs = documentHandler
+		dash.Locks = locks
+		dash.EditWindow = time.Duration(s.config.EditWindow) * time.Second
+		dash.MaxRevisions = s.config.EditMaxRevisions
 		documentHandler.Uploaders = dash.Uploaders
 		dash.RegisterRoutes(s.mux)
 
 		// Every read of a paste goes through the gate before the store
 		s.views = accounts.NewViews(s.Accounts)
 		s.sweeper = accounts.NewSweeper(s.Accounts, s.drainer)
-		documentHandler.Access = dashboard.NewGate(s.Accounts, s.views, &dashboard.KeyLocks{},
-			time.Duration(s.config.EditWindow)*time.Second)
+		gate := dashboard.NewGate(s.Accounts, s.views, locks, dash.EditWindow)
+		documentHandler.Access = gate
 		documentHandler.Readers = dash.Readers
 		log.Info().Int("registered_max_length", s.config.RegisteredMaxLength).
 			Int("registered_upload_quota", s.config.RegisteredUploadQuota).
 			Int64("user_storage_limit", s.config.UserStorageLimit).Int("user_max_pastes", s.config.UserMaxPastes).
 			Int("max_tokens_per_user", s.config.MaxTokensPerUser).Int("edit_window", s.config.EditWindow).
+			Int("edit_max_revisions", s.config.EditMaxRevisions).
 			Msg("Registered user limits configured")
 		files, _ := s.storage.(*storage.FileStorage)
 		(&admin.Handler{
@@ -278,6 +312,12 @@ func (s *Server) RegisterRoutes() {
 			Docs:        documentHandler,
 			Inflight:    inflight,
 			MCP:         mcpHandler,
+			Gate:        gate,
+			Drainer:     s.drainer,
+			Events:      s.events,
+			Bans:        s.bans,
+			Reauth:      time.Duration(s.config.AdminReauth) * time.Second,
+			BaseURL:     s.config.BaseURL,
 		}).RegisterRoutes(s.mux)
 		serveDashboard := servePage("dashboard.html")
 		s.mux.Get("/dashboard", serveDashboard)
@@ -358,6 +398,28 @@ func (s *Server) pinRegistered() {
 		log.Fatal().Err(err).Msg("Failed to read the registered pastes to keep them from expiring")
 	}
 	log.Info().Int("pinned", n).Msg("Registered pastes pinned, they never expire")
+}
+
+// loadBans drops the manual bans that are over and loads the others in
+// memory, where every request is checked against them
+func (s *Server) loadBans() *abuse.Bans {
+	ctx := context.Background()
+	now := time.Now()
+	if n, err := s.Accounts.DeleteExpiredBans(ctx, now); err != nil {
+		log.Warn().Err(err).Msg("Failed to delete the manual bans that are over")
+	} else if n > 0 {
+		log.Info().Int64("deleted", n).Msg("Deleted manual bans that are over")
+	}
+	list, err := s.Accounts.Bans(ctx, now, abuse.MaxManualBans)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to read the manual bans")
+	}
+	bans := make([]abuse.Ban, 0, len(list))
+	for _, b := range list {
+		bans = append(bans, abuse.Ban{Client: b.Client, Reason: b.Reason, CreatedAt: b.CreatedAt, ExpiresAt: b.ExpiresAt, AdminID: b.AdminID})
+	}
+	log.Info().Int("manual_bans", len(bans)).Msg("Manual bans loaded")
+	return abuse.NewBans(bans)
 }
 
 // deleteStored deletes one stored paste for the delete queue
@@ -609,12 +671,34 @@ func (w *rateLimitedWarning) allow(now time.Time) bool {
 // too many requests in progress
 const inflightRetryAfter = "2"
 
+// manualBanMiddleware answers 403 {"message":"Blocked"} to a client an admin
+// banned, on every route but /health, before any other limit counts it. The
+// bans live in memory, so the check costs no database read. nil bans let
+// everything through.
+func manualBanMiddleware(bans *abuse.Bans) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if bans == nil {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/health" && bans.Blocked(handler.ClientKey(handler.ClientIP(r))) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(http.StatusForbidden)
+				fmt.Fprintln(w, `{"message":"Blocked"}`)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // inflightMiddleware refuses a request with 429 when its client already has
 // as many requests in progress as the limiter allows. Every route counts,
 // static files too: each open request holds a connection, its buffers and,
 // for a client that reads slowly, kernel socket buffers. A nil limiter lets
 // everything through.
-func inflightMiddleware(limiter *handler.InflightLimiter) func(http.Handler) http.Handler {
+func inflightMiddleware(limiter *handler.InflightLimiter, events *abuse.Events) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if limiter == nil {
 			return next
@@ -622,6 +706,7 @@ func inflightMiddleware(limiter *handler.InflightLimiter) func(http.Handler) htt
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			release, ok := limiter.Acquire(handler.ClientIP(r))
 			if !ok {
+				events.Record(abuse.KindInflight, handler.ClientKey(handler.ClientIP(r)), "")
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Retry-After", inflightRetryAfter)
 				w.WriteHeader(http.StatusTooManyRequests)

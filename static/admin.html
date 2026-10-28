@@ -10,106 +10,436 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/fira_code.css"
         integrity="sha512-LaxQmGd9k/pW51CsEy2nLIlbUXCgsyvUEVT5fSguN2b2OBwHjMi2aiUdEEXSMg8Jvy+bCB01as61aNrHnL2DYQ=="
         crossorigin="anonymous" referrerpolicy="no-referrer" />
-    <link rel="stylesheet" type="text/css" href="/dashboard.css?v=0.2.0" />
+    <link rel="stylesheet" type="text/css" href="/dashboard.css?v=0.4.0" />
+    <link rel="stylesheet" type="text/css" href="/account-menu.css?v=0.1.0" />
+    <link rel="stylesheet" type="text/css" href="/admin.css?v=0.1.1" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"
         integrity="sha512-v2CJ7UaYy4JwqLDIrZUI/4hqeoQieOmAZNXBeQyjo21dadnwR+8ZaIJVT8EE2iyI61OV8e6M8PP2/4hpQINQ/g=="
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-    <script src="/admin/admin.js?v=0.2.0"></script>
+    <script src="/account-menu.js?v=0.1.1"></script>
+    <script src="/admin/admin.js?v=0.4.1"></script>
 </head>
 
-<body>
+<body class="loading">
+    <a class="skip" href="#main">Skip to content</a>
     <header class="top">
         <a class="brand" href="/">
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
                 <path fill="currentColor" d="M12 2l8 3.2v6.1c0 5-3.4 9.1-8 10.7-4.6-1.6-8-5.7-8-10.7V5.2zm0 2.1L6 6.5v4.8c0 3.9 2.5 7.2 6 8.6 3.5-1.4 6-4.7 6-8.6V6.5z"/>
             </svg>
-            hastebin <span class="brand-sub">admin</span>
+            <span class="brand-name">hastebin <span class="brand-sub">admin</span></span>
         </a>
         <nav class="tabs" aria-label="Admin sections">
-            <a href="/admin" aria-current="page">Status</a>
+            <a href="/admin" data-tab="moderation">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M6.8 1.5a5.3 5.3 0 0 1 4.2 8.5l3.6 3.6-1.1 1.1-3.6-3.6a5.3 5.3 0 1 1-3.1-9.6zm0 1.6a3.7 3.7 0 1 0 0 7.4 3.7 3.7 0 0 0 0-7.4z"/>
+                </svg>
+                <span>Moderation</span>
+            </a>
+            <a href="/admin/users" data-tab="users">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M6 2a2.8 2.8 0 1 1 0 5.6A2.8 2.8 0 0 1 6 2zM1 14c0-2.6 2.2-4.4 5-4.4s5 1.8 5 4.4v.6H1zm10.4-11.6a2.6 2.6 0 0 1 0 5 4 4 0 0 0 0-5zM12.4 9.8c1.6.5 2.6 1.9 2.6 3.6v1.2h-2.6V14c0-1.7-.6-3.2-1.7-4.3z"/>
+                </svg>
+                <span>Users</span>
+            </a>
+            <a href="/admin/abuse" data-tab="abuse">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1zm0 1.6a5.4 5.4 0 0 0-4.3 8.7l7.6-7.6A5.4 5.4 0 0 0 8 2.6zm4.3 2.1l-7.6 7.6a5.4 5.4 0 0 0 7.6-7.6z"/>
+                </svg>
+                <span>Abuse</span>
+            </a>
+            <a href="/admin/status" data-tab="status">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M1 13h14v1.5H1zM2 9h2v3H2zm4-4h2v7H6zm4 2h2v5h-2zm4-5h1v10h-1z"/>
+                </svg>
+                <span>Status</span>
+            </a>
+            <a href="/admin/audit" data-tab="audit">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M3 1h7.5L13 3.5V15H3zm1.5 1.5v11h7V4.2H9.8V2.5zM6 6.5h4v1.2H6zm0 2.4h4v1.2H6zm0 2.4h2.8v1.2H6z"/>
+                </svg>
+                <span>Audit</span>
+            </a>
         </nav>
-        <span class="who"></span>
+        <div class="top-end">
+            <div class="account-slot" hidden></div>
+        </div>
     </header>
 
-    <main>
-        <div class="toolbar">
-            <h1>Status</h1>
-            <span class="updated" aria-live="polite"></span>
-            <button type="button" class="btn refresh">
-                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
-                    <path fill="currentColor" d="M13.6 2.4v4h-4l1.5-1.5A4.5 4.5 0 1 0 12.5 8h1.6A6 6 0 1 1 12.2 3.8z"/>
-                </svg>
-                Refresh
-            </button>
-        </div>
+    <main id="main" tabindex="-1">
         <p class="notice" role="alert" hidden></p>
 
-        <section class="grid">
-            <article class="card" id="card-server">
-                <h2>
+        <!-- Moderation -->
+        <section id="tab-moderation" class="view" aria-labelledby="mod-title" hidden>
+            <div class="toolbar">
+                <h1 id="mod-title">Moderation</h1>
+            </div>
+            <p class="intro">Find a reported paste by its key or link. Showing its content needs a reason, and every action goes in the audit log.</p>
+            <form class="lookup" role="search" autocomplete="off">
+                <label class="search">
                     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
-                        <path fill="currentColor" d="M2 2h12v5H2zm0 7h12v5H2zm2-5v1h2V4zm0 7v1h2v-1z"/>
+                        <path fill="currentColor" d="M6.8 1.5a5.3 5.3 0 0 1 4.2 8.5l3.6 3.6-1.1 1.1-3.6-3.6a5.3 5.3 0 1 1-3.1-9.6zm0 1.6a3.7 3.7 0 1 0 0 7.4 3.7 3.7 0 0 0 0-7.4z"/>
                     </svg>
-                    Server
-                </h2>
-                <dl class="rows"></dl>
+                    <span class="sr-only">Paste key or link</span>
+                    <input type="search" name="q" maxlength="2048" placeholder="Paste key or link, e.g. https://host/abcdefghij" spellcheck="false" autocapitalize="off" />
+                </label>
+                <button type="submit" class="btn primary">Look up</button>
+            </form>
+
+            <div class="mod-empty empty card">
+                <svg class="empty-glyph" viewBox="0 0 64 64" width="56" height="56" aria-hidden="true" focusable="false">
+                    <rect x="10" y="10" width="34" height="42" rx="5" fill="none" stroke="currentColor" stroke-width="3"/>
+                    <path d="M18 22h18M18 30h12" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+                    <circle cx="42" cy="40" r="10" fill="#073642" stroke="currentColor" stroke-width="3"/>
+                    <path d="M49 47l7 7" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+                </svg>
+                <p class="empty-title">Look up a paste</p>
+                <p class="empty-text">Moderation starts from a report. Pastes are never listed or searched here.</p>
+            </div>
+
+            <article class="card paste-card" aria-live="polite" hidden>
+                <div class="paste-head">
+                    <div class="paste-id">
+                        <code class="paste-key"></code>
+                        <span class="paste-chips"></span>
+                    </div>
+                    <p class="paste-title"></p>
+                </div>
+                <dl class="rows paste-rows"></dl>
+                <div class="actions left paste-actions">
+                    <button type="button" class="btn show-content">
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M8 3c3.6 0 6.2 2.6 7 5-.8 2.4-3.4 5-7 5S1.8 10.4 1 8c.8-2.4 3.4-5 7-5zm0 1.6c-2.4 0-4.4 1.6-5.3 3.4.9 1.8 2.9 3.4 5.3 3.4s4.4-1.6 5.3-3.4C12.4 6.2 10.4 4.6 8 4.6zM8 6a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/>
+                        </svg>
+                        Show content
+                    </button>
+                    <button type="button" class="btn danger-ghost delete-paste">
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M6 1h4l.6 1.4H14V4H2V2.4h3.4zM3.2 5h9.6l-.7 10H3.9zm3 1.6v6.8h1.2V6.6zm2.4 0v6.8h1.2V6.6z"/>
+                        </svg>
+                        Delete
+                    </button>
+                    <button type="button" class="btn danger abuse-paste">
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M8 1l7.5 13H.5zm-.9 5v4h1.8V6zm0 5.2V13h1.8v-1.8z"/>
+                        </svg>
+                        Mark as abuse
+                    </button>
+                </div>
+                <p class="hint paste-hint"></p>
             </article>
-            <article class="card" id="card-storage">
-                <h2>
+
+            <section class="card content-card" aria-labelledby="content-title" hidden>
+                <h2 id="content-title">
                     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
-                        <path fill="currentColor" d="M8 1c3.3 0 6 1.1 6 2.5v9c0 1.4-2.7 2.5-6 2.5s-6-1.1-6-2.5v-9C2 2.1 4.7 1 8 1zm0 1.5c-2.8 0-4.5.9-4.5 1s1.7 1 4.5 1 4.5-.9 4.5-1-1.7-1-4.5-1z"/>
+                        <path fill="currentColor" d="M3 1h7.5L13 3.5V15H3zm1.5 1.5v11h7V4.2H9.8V2.5zM6 6.5h4v1.2H6zm0 2.4h4v1.2H6z"/>
                     </svg>
-                    Storage
+                    Content <span class="content-note"></span>
                 </h2>
-                <dl class="rows"></dl>
-            </article>
-            <article class="card" id="card-accounts">
-                <h2>
-                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
-                        <circle cx="8" cy="5" r="3" fill="currentColor"/>
-                        <path fill="currentColor" d="M2 14.5c.4-3 2.9-5 6-5s5.6 2 6 5z"/>
-                    </svg>
-                    Accounts
-                </h2>
-                <dl class="rows"></dl>
-            </article>
-            <article class="card" id="card-load">
-                <h2>
-                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
-                        <path fill="currentColor" d="M1 13h14v1.5H1zM2 9h2v3H2zm4-4h2v7H6zm4 2h2v5h-2zm4-5h1v10h-1z"/>
-                    </svg>
-                    Load
-                </h2>
-                <dl class="rows"></dl>
-            </article>
-            <article class="card" id="card-mcp">
-                <h2>
-                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
-                        <path fill="currentColor" d="M6.7 1.7l1.1 3.1a2 2 0 0 0 1.2 1.2l3.1 1.1-3.1 1.1a2 2 0 0 0-1.2 1.2l-1.1 3.1-1.1-3.1a2 2 0 0 0-1.2-1.2L1.3 7.1l3.1-1.1a2 2 0 0 0 1.2-1.2z"/>
-                    </svg>
-                    MCP
-                </h2>
-                <dl class="rows"></dl>
-            </article>
+                <pre class="content-view" tabindex="0"></pre>
+            </section>
         </section>
 
-        <section class="card wide" id="card-config">
-            <h2>
-                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
-                    <path fill="currentColor" d="M2 3h12v1.5H2zm0 4.25h12v1.5H2zM2 11.5h12V13H2zM5 2h1.5v3.5H5zm4 4.25h1.5v3.5H9zM4 10.5h1.5V14H4z"/>
-                </svg>
-                Effective config
-            </h2>
-            <div class="table-wrap">
-                <table>
+        <!-- Users -->
+        <section id="tab-users" class="view" aria-labelledby="users-title" hidden>
+            <div class="users-list-view">
+                <div class="toolbar">
+                    <h1 id="users-title">Users <span class="count"></span></h1>
+                </div>
+                <form class="filters-bar users-filter" role="search" autocomplete="off">
+                    <label class="search">
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M6.8 1.5a5.3 5.3 0 0 1 4.2 8.5l3.6 3.6-1.1 1.1-3.6-3.6a5.3 5.3 0 1 1-3.1-9.6zm0 1.6a3.7 3.7 0 1 0 0 7.4 3.7 3.7 0 0 0 0-7.4z"/>
+                        </svg>
+                        <span class="sr-only">Search login or id</span>
+                        <input type="search" name="q" maxlength="100" placeholder="Search login or id" spellcheck="false" autocapitalize="off" />
+                    </label>
+                    <label class="field sort-field">
+                        <span>Sort</span>
+                        <select name="sort">
+                            <option value="last_seen">Last seen</option>
+                            <option value="created">Newest</option>
+                            <option value="pastes">Most pastes</option>
+                            <option value="bytes">Most storage</option>
+                            <option value="login">Login A to Z</option>
+                        </select>
+                    </label>
+                </form>
+                <div class="list-card">
+                    <table class="admin-list users">
+                        <caption class="sr-only">Registered users, 50 per page</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">User</th>
+                                <th scope="col" class="num">Pastes</th>
+                                <th scope="col" class="num">Storage</th>
+                                <th scope="col">Created</th>
+                                <th scope="col">Last seen</th>
+                                <th scope="col">State</th>
+                                <th scope="col" class="c-act"><span class="sr-only">Actions</span></th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                    <p class="empty-line" hidden>No user matches.</p>
+                    <div class="list-foot"><nav class="pager" aria-label="Pages"></nav></div>
+                </div>
+            </div>
+
+            <div class="user-view" hidden>
+                <div class="toolbar">
+                    <a class="btn ghost small back" href="/admin/users">
+                        <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M10.5 2.5L5 8l5.5 5.5-1.1 1.1L2.8 8l6.6-6.6z"/>
+                        </svg>
+                        Users
+                    </a>
+                </div>
+                <article class="card user-card">
+                    <div class="user-head">
+                        <span class="user-avatar"></span>
+                        <div class="user-who">
+                            <h1 class="user-login"></h1>
+                            <p class="user-ids"></p>
+                        </div>
+                        <span class="user-chips"></span>
+                    </div>
+                    <dl class="rows user-rows"></dl>
+                    <div class="actions left user-actions"></div>
+                </article>
+                <div class="list-card user-pastes">
+                    <h2 class="list-title">Pastes <span class="count"></span></h2>
+                    <table class="admin-list pastes-meta">
+                        <caption class="sr-only">Paste metadata of this user, 50 per page</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Title / key</th>
+                                <th scope="col">Visibility</th>
+                                <th scope="col" class="num">Size</th>
+                                <th scope="col" class="num">Views</th>
+                                <th scope="col">Created</th>
+                                <th scope="col" class="c-act"><span class="sr-only">Actions</span></th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                    <p class="empty-line" hidden>No pastes.</p>
+                    <div class="list-foot"><nav class="pager" aria-label="Pages"></nav></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Abuse -->
+        <section id="tab-abuse" class="view" aria-labelledby="abuse-title" hidden>
+            <div class="toolbar">
+                <h1 id="abuse-title">Abuse</h1>
+                <button type="button" class="btn refresh-abuse">
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M13.6 2.4v4h-4l1.5-1.5A4.5 4.5 0 1 0 12.5 8h1.6A6 6 0 1 1 12.2 3.8z"/>
+                    </svg>
+                    Refresh
+                </button>
+            </div>
+
+            <article class="card ban-form-card">
+                <h2>
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1zm0 1.6a5.4 5.4 0 0 0-4.3 8.7l7.6-7.6A5.4 5.4 0 0 0 8 2.6zm4.3 2.1l-7.6 7.6a5.4 5.4 0 0 0 7.6-7.6z"/>
+                    </svg>
+                    Ban an address
+                </h2>
+                <form class="ban-form" autocomplete="off">
+                    <label class="field grow">
+                        <span>IPv4, IPv6 or IPv6/64</span>
+                        <input type="text" name="target" maxlength="64" placeholder="203.0.113.7 or 2001:db8:1:2::/64" spellcheck="false" autocapitalize="off" required />
+                    </label>
+                    <label class="field">
+                        <span>For</span>
+                        <select name="expires_in">
+                            <option value="3600">1 hour</option>
+                            <option value="86400" selected>1 day</option>
+                            <option value="604800">7 days</option>
+                            <option value="2592000">30 days</option>
+                            <option value="0">Until lifted</option>
+                        </select>
+                    </label>
+                    <label class="field grow">
+                        <span>Reason</span>
+                        <input type="text" name="reason" maxlength="500" placeholder="Why, for the audit log" required />
+                    </label>
+                    <button type="submit" class="btn danger">Ban</button>
+                </form>
+                <p class="hint">A banned address gets 403 on every page and API. An IPv6 address bans its whole /64.</p>
+            </article>
+
+            <div class="list-card abuse-bans">
+                <h2 class="list-title">Bans <span class="count"></span></h2>
+                <table class="admin-list bans">
+                    <caption class="sr-only">Manual and automatic bans, 50 per page</caption>
                     <thead>
-                        <tr><th scope="col">Setting</th><th scope="col">Value</th></tr>
+                        <tr>
+                            <th scope="col">Address</th>
+                            <th scope="col">Kind</th>
+                            <th scope="col">Until</th>
+                            <th scope="col">Reason</th>
+                            <th scope="col" class="c-act"><span class="sr-only">Actions</span></th>
+                        </tr>
                     </thead>
                     <tbody></tbody>
                 </table>
+                <p class="empty-line" hidden>No address is banned or blocked now.</p>
+                <div class="list-foot"><nav class="pager" aria-label="Pages"></nav></div>
+            </div>
+
+            <div class="list-card abuse-events">
+                <h2 class="list-title">Recent refusals <span class="count"></span></h2>
+                <p class="list-note">The last 500, each kind at most once a minute per address. Kept in memory only.</p>
+                <table class="admin-list events">
+                    <caption class="sr-only">Recent refusals, 50 per page</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">Address</th>
+                            <th scope="col">Kind</th>
+                            <th scope="col">When</th>
+                            <th scope="col">Detail</th>
+                            <th scope="col" class="c-act"><span class="sr-only">Actions</span></th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+                <p class="empty-line" hidden>Nothing refused lately.</p>
+                <div class="list-foot"><nav class="pager" aria-label="Pages"></nav></div>
+            </div>
+        </section>
+
+        <!-- Status -->
+        <section id="tab-status" class="view" aria-labelledby="status-title" hidden>
+            <div class="toolbar">
+                <h1 id="status-title">Status</h1>
+                <span class="updated" aria-live="polite"></span>
+                <button type="button" class="btn refresh">
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M13.6 2.4v4h-4l1.5-1.5A4.5 4.5 0 1 0 12.5 8h1.6A6 6 0 1 1 12.2 3.8z"/>
+                    </svg>
+                    Refresh
+                </button>
+            </div>
+
+            <section class="grid">
+                <article class="card" id="card-server">
+                    <h2>
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M2 2h12v5H2zm0 7h12v5H2zm2-5v1h2V4zm0 7v1h2v-1z"/>
+                        </svg>
+                        Server
+                    </h2>
+                    <dl class="rows"></dl>
+                </article>
+                <article class="card" id="card-storage">
+                    <h2>
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M8 1c3.3 0 6 1.1 6 2.5v9c0 1.4-2.7 2.5-6 2.5s-6-1.1-6-2.5v-9C2 2.1 4.7 1 8 1zm0 1.5c-2.8 0-4.5.9-4.5 1s1.7 1 4.5 1 4.5-.9 4.5-1-1.7-1-4.5-1z"/>
+                        </svg>
+                        Storage
+                    </h2>
+                    <dl class="rows"></dl>
+                </article>
+                <article class="card" id="card-accounts">
+                    <h2>
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <circle cx="8" cy="5" r="3" fill="currentColor"/>
+                            <path fill="currentColor" d="M2 14.5c.4-3 2.9-5 6-5s5.6 2 6 5z"/>
+                        </svg>
+                        Accounts
+                    </h2>
+                    <dl class="rows"></dl>
+                </article>
+                <article class="card" id="card-load">
+                    <h2>
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M1 13h14v1.5H1zM2 9h2v3H2zm4-4h2v7H6zm4 2h2v5h-2zm4-5h1v10h-1z"/>
+                        </svg>
+                        Load
+                    </h2>
+                    <dl class="rows"></dl>
+                </article>
+                <article class="card" id="card-mcp">
+                    <h2>
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M6.7 1.7l1.1 3.1a2 2 0 0 0 1.2 1.2l3.1 1.1-3.1 1.1a2 2 0 0 0-1.2 1.2l-1.1 3.1-1.1-3.1a2 2 0 0 0-1.2-1.2L1.3 7.1l3.1-1.1a2 2 0 0 0 1.2-1.2z"/>
+                        </svg>
+                        MCP
+                    </h2>
+                    <dl class="rows"></dl>
+                </article>
+        
+            </section>
+
+            <section class="card wide" id="card-config">
+                <h2>
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M2 3h12v1.5H2zm0 4.25h12v1.5H2zM2 11.5h12V13H2zM5 2h1.5v3.5H5zm4 4.25h1.5v3.5H9zM4 10.5h1.5V14H4z"/>
+                    </svg>
+                    Effective config
+                </h2>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr><th scope="col">Setting</th><th scope="col">Value</th></tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </section>
+        </section>
+
+        <!-- Audit -->
+        <section id="tab-audit" class="view" aria-labelledby="audit-title" hidden>
+            <div class="toolbar">
+                <h1 id="audit-title">Audit log <span class="count"></span></h1>
+            </div>
+            <p class="intro">Every admin action and account deletion, newest first. Rows can be added, never changed or removed.</p>
+            <div class="list-card">
+                <table class="admin-list audit">
+                    <caption class="sr-only">Audit log, 50 per page</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">Action</th>
+                            <th scope="col">Target</th>
+                            <th scope="col">By</th>
+                            <th scope="col">When</th>
+                            <th scope="col">Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+                <p class="empty-line" hidden>The audit log is empty.</p>
+                <div class="list-foot"><nav class="pager" aria-label="Pages"></nav></div>
             </div>
         </section>
     </main>
+
+    <dialog class="confirm reason-dialog" aria-labelledby="reason-title" aria-describedby="reason-text">
+        <form method="dialog" autocomplete="off">
+            <h2 id="reason-title"></h2>
+            <p id="reason-text"></p>
+            <label class="field confirm-field" hidden>
+                <span>Type <b class="confirm-login"></b> to confirm</span>
+                <input type="text" name="confirm" autocapitalize="off" spellcheck="false" />
+            </label>
+            <label class="field">
+                <span>Reason, for the audit log</span>
+                <textarea name="reason" rows="2" maxlength="500"></textarea>
+            </label>
+            <p class="dialog-error" role="alert" hidden></p>
+            <div class="actions right">
+                <button type="submit" value="cancel" class="btn ghost" formnovalidate>Cancel</button>
+                <button type="submit" value="ok" class="btn danger reason-ok"></button>
+            </div>
+        </form>
+    </dialog>
+
+    <div class="toast" role="status" aria-live="polite" hidden></div>
 </body>
 
 </html>

@@ -183,6 +183,20 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 	require.Equal(t, "DENY", rec.Header().Get("X-Frame-Options"))
 	require.Equal(t, contentSecurityPolicy, rec.Header().Get("Content-Security-Policy"))
 	require.Equal(t, "noindex, nofollow", rec.Header().Get("X-Robots-Tag"))
+
+	// Images: the page itself, data: and GitHub avatars, nothing more
+	var directives []string
+	for _, d := range strings.Split(rec.Header().Get("Content-Security-Policy"), ";") {
+		d = strings.TrimSpace(d)
+		directives = append(directives, d)
+		if strings.HasPrefix(d, "img-src ") {
+			require.Equal(t, "img-src 'self' data: https://avatars.githubusercontent.com", d)
+		}
+	}
+	require.Contains(t, directives, "img-src 'self' data: https://avatars.githubusercontent.com")
+	require.Contains(t, directives, "connect-src 'self'")
+	require.Contains(t, directives, "script-src 'self' https://cdnjs.cloudflare.com")
+	require.Contains(t, directives, "default-src 'self'")
 }
 
 func TestKeyByRemoteIP(t *testing.T) {
@@ -640,7 +654,7 @@ func TestInflightMiddleware(t *testing.T) {
 		<-release
 		w.WriteHeader(http.StatusOK)
 	})
-	h := inflightMiddleware(handler.NewInflightLimiter(2))(slow)
+	h := inflightMiddleware(handler.NewInflightLimiter(2), nil)(slow)
 	serve := func(remoteAddr string) chan *httptest.ResponseRecorder {
 		out := make(chan *httptest.ResponseRecorder, 1)
 		go func() {
@@ -672,7 +686,7 @@ func TestInflightMiddleware(t *testing.T) {
 	require.Equal(t, http.StatusOK, (<-serve("192.0.2.1:4")).Code)
 
 	// A nil limiter (max_inflight_per_client: -1) lets everything through
-	pass := inflightMiddleware(nil)(http.NotFoundHandler())
+	pass := inflightMiddleware(nil, nil)(http.NotFoundHandler())
 	rec = httptest.NewRecorder()
 	pass.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	require.Equal(t, http.StatusNotFound, rec.Code)

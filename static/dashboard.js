@@ -18,6 +18,7 @@ $(function () {
 
     var $main = $('#main');
     var $notice = $('.notice');
+    var menu = account_menu.mount('.account-slot', {bar: 'header.top', leave: '/'});
 
     // ---- formatting
 
@@ -183,8 +184,8 @@ $(function () {
 
     function showSignedOut() {
         $('body').removeClass('loading');
-        $('.view, .tabs, .logout, .admin-link').prop('hidden', true);
-        $('.who').text('');
+        $('.view, .tabs').prop('hidden', true);
+        menu.render(null, !!(info && info.login));
         $('#signed-out').prop('hidden', false);
         $('.login-link').prop('hidden', !(info && info.login));
         $('.login-off').prop('hidden', !info || !!info.login);
@@ -192,6 +193,9 @@ $(function () {
 
     function tabFromPath() {
         var path = window.location.pathname.replace(/\/+$/, '');
+        if (detailKey()) {
+            return 'detail';
+        }
         if (path === '/dashboard/tokens') {
             return 'tokens';
         }
@@ -201,21 +205,46 @@ $(function () {
         return 'pastes';
     }
 
+    // The key of /dashboard/p/<key>, null on any other page
+    function detailKey() {
+        var m = /^\/dashboard\/p\/([^\/]+)\/?$/.exec(window.location.pathname);
+        return m ? decodeURIComponent(m[1]) : null;
+    }
+
+    // Go to a dashboard page without reloading. The list keeps its filters.
+    function navigate(path) {
+        history.pushState(null, '', path);
+        showTab(tabFromPath(), true);
+        window.scrollTo(0, 0);
+    }
+
+    // The address of the list as it was last shown
+    function listPath() {
+        var qs = query(false);
+        return '/dashboard' + (qs ? '?' + qs : '');
+    }
+
     function showTab(name, focus) {
+        if (tab === 'detail' && name !== 'detail') {
+            paste_detail.close();
+        }
         tab = name;
         $('.view').prop('hidden', true);
         $('#tab-' + name).prop('hidden', false);
         $('.tabs a').each(function () {
-            var on = $(this).data('tab') === name;
+            var on = $(this).data('tab') === (name === 'detail' ? 'pastes' : name);
             if (on) {
                 $(this).attr('aria-current', 'page');
             } else {
                 $(this).removeAttr('aria-current');
             }
         });
-        document.title = {pastes: 'hastebin - your pastes', tokens: 'hastebin - API tokens', account: 'hastebin - account'}[name];
+        document.title = {pastes: 'hastebin - your pastes', tokens: 'hastebin - API tokens', account: 'hastebin - account',
+            detail: 'hastebin - paste'}[name];
         notice('');
-        if (name === 'pastes') {
+        if (name === 'detail') {
+            paste_detail.open(detailKey(), helpers);
+        } else if (name === 'pastes') {
             loadFacets();
             loadList();
         } else if (name === 'tokens') {
@@ -241,9 +270,8 @@ $(function () {
                 }
                 session = s;
                 $('#signed-out').prop('hidden', true);
-                $('.tabs, .logout').prop('hidden', false);
-                $('.admin-link').prop('hidden', !s.user.admin);
-                $('.who').text(s.user.login);
+                $('.tabs').prop('hidden', false);
+                menu.render(s, true);
                 $('.confirm-login').text(s.user.login);
                 readQuery();
                 showTab(tabFromPath(), false);
@@ -275,17 +303,6 @@ $(function () {
             readQuery();
             showTab(tabFromPath(), false);
         }
-    });
-
-    $('.logout').on('click', function () {
-        var $b = $(this).prop('disabled', true);
-        api('POST', '/api/v1/session/logout', {}).done(function () {
-            window.location.href = '/';
-        }).fail(function (xhr) {
-            toast(errorText(xhr, 'Logging out failed. Try again.'));
-        }).always(function () {
-            $b.prop('disabled', false);
-        });
     });
 
     // ---- My pastes
@@ -449,9 +466,10 @@ $(function () {
         var $row = $(document.importNode(tpl.content, true).firstElementChild);
         var name = p.title || p.key;
         var view = '/' + encodeURIComponent(p.key);
+        var detail = '/dashboard/p/' + encodeURIComponent(p.key);
         $row.data('key', p.key);
         $row.find('.pick').attr('aria-label', 'Select ' + name).val(p.key);
-        $row.find('a.title').attr('href', view).text(name).toggleClass('untitled', !p.title);
+        $row.find('a.title').attr('href', detail).attr('data-nav', '1').text(name).toggleClass('untitled', !p.title);
         $row.find('.key').text(p.key).prop('hidden', !p.title);
         var $tags = $row.find('.tags');
         (p.tags || []).forEach(function (t) {
@@ -469,6 +487,7 @@ $(function () {
         $row.find('.c-meta').text(meta.filter(Boolean).join(' · '));
         $row.find('.menu summary').attr('aria-label', 'Actions for ' + name);
         $row.find('.m-view').attr('href', view);
+        $row.find('.m-edit').attr('href', detail).attr('data-nav', '1');
         $row.find('.m-raw').attr('href', '/raw' + view);
         $row.find('.m-download').attr('href', '/raw' + view + '?download=1');
         return $row;
@@ -629,6 +648,26 @@ $(function () {
             toast(ok ? 'Link copied.' : 'Copy failed. Open the paste and copy its address.');
             $b.closest('details')[0].open = false;
         });
+    });
+    $('table.pastes').on('click', '.m-duplicate', function () {
+        var key = $(this).closest('tr').data('key');
+        $(this).closest('details')[0].open = false;
+        api('POST', '/api/v1/pastes/' + encodeURIComponent(key) + '/duplicate', {}).done(function () {
+            toast('Duplicated under a new link.');
+            state.page = 1;
+            loadList();
+        }).fail(function (xhr) {
+            toast(errorText(xhr, 'Duplicating failed. Try again.'));
+        });
+    });
+    // Links inside the dashboard open without a reload
+    $main.on('click', 'a[data-nav]', function (e) {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) {
+            return;
+        }
+        e.preventDefault();
+        $(this).closest('details.menu').prop('open', false);
+        navigate($(this).attr('href'));
     });
     $('table.pastes').on('click', '.m-delete', function () {
         var $row = $(this).closest('tr');
@@ -868,6 +907,16 @@ $(function () {
                 });
             });
     });
+
+    // What the paste page (paste-detail.js) shares with the rest of the dashboard
+    var helpers = {
+        api: api, toast: toast, notice: notice, errorText: errorText, confirmAction: confirmAction,
+        copyText: copyText, bytes: bytes, count: count, short: short, full: full, plural: plural,
+        navigate: navigate, listPath: listPath,
+        session: function () {
+            return session;
+        }
+    };
 
     start();
 });

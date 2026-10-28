@@ -1,18 +1,31 @@
 // Package admin serves the admin page and its API. Every route answers 404
-// to anyone but an admin with a session cookie.
+// to anyone but an admin with a session cookie; a request with any
+// Authorization header gets 404 too, so no API token ever acts as an admin.
+// State changes need the CSRF token, and the destructive ones a GitHub
+// login younger than ADMIN_REAUTH. Every change writes an audit row.
+//
+// Moderation is report driven: a paste is found by its key or link, never
+// by browsing, and its content is shown only with a reason, which is
+// audited. Accounts whose GitHub id is in ADMIN_GITHUB_IDS cannot be
+// disabled, revoked or deleted from here, the admin's own included: one
+// admin cannot lock out another, and none can lock out themselves.
 package admin
 
 import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/armbian/ansi-hastebin/config"
 	"github.com/armbian/ansi-hastebin/handler"
+	"github.com/armbian/ansi-hastebin/internal/abuse"
 	"github.com/armbian/ansi-hastebin/internal/accounts"
 	"github.com/armbian/ansi-hastebin/internal/auth"
+	"github.com/armbian/ansi-hastebin/internal/dashboard"
 	"github.com/armbian/ansi-hastebin/internal/mcpserver"
 	"github.com/armbian/ansi-hastebin/internal/storage"
 	"github.com/armbian/ansi-hastebin/static"
@@ -43,6 +56,23 @@ type Handler struct {
 	// MCP is the MCP endpoint, nil when it is off
 	MCP *mcpserver.Handler
 
+	// Gate is the access gate of registered pastes, for the content view
+	Gate *dashboard.Gate
+
+	// Drainer deletes the content of removed pastes; nil leaves it queued
+	Drainer *accounts.Drainer
+
+	// Events are the recent refusals, Bans the manual bans in memory
+	Events *abuse.Events
+	Bans   *abuse.Bans
+
+	// Reauth is how old the GitHub login of a session may be for a
+	// destructive action; 0 means DefaultReauth
+	Reauth time.Duration
+
+	// BaseURL is the public address: links to other hosts are refused
+	BaseURL string
+
 	// scan caches the count of paste files
 	scanMu    sync.Mutex
 	scanAt    time.Time
@@ -53,19 +83,113 @@ type Handler struct {
 	now func() time.Time
 }
 
+// DefaultReauth is how old a GitHub login may be for a destructive action
+// when Reauth is not set, as ADMIN_REAUTH defaults
+const DefaultReauth = 12 * time.Hour
+
+// Per admin rate limits of the API
+const (
+	readLimit   = 300
+	writeLimit  = 60
+	limitWindow = time.Minute
+)
+
 // RegisterRoutes adds /admin, /admin/* and /api/v1/admin/*
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	if h.now == nil {
 		h.now = time.Now
 	}
+	reauth := h.Reauth
+	if reauth <= 0 {
+		reauth = DefaultReauth
+	}
+	recent := h.Auth.RequireRecentAuth(reauth, "/admin")
+	limited := func(r *http.Request) {
+		h.Events.Record(abuse.KindRateLimit, handler.ClientKey(handler.ClientIP(r)), "admin")
+	}
+	reads := dashboard.UserLimit(readLimit, limitWindow, limited)
+	writes := dashboard.UserLimit(writeLimit, limitWindow, limited)
+
+	// destructive needs a recent GitHub login on top of the CSRF check
+	destructive := func(fn http.HandlerFunc) http.Handler { return recent(fn) }
+
 	r.Group(func(r chi.Router) {
-		// Every method goes through the admin check, so non-admins get 404, never 405
+		// Every method goes through the admin check, so non-admins get 404,
+		// never 405: each route takes every method and picks its own below
 		r.Use(h.Auth.LoadSession, h.Auth.RequireAdmin, noStore)
 		r.HandleFunc("/admin", h.page)
 		r.HandleFunc("/admin/*", h.page)
 		r.HandleFunc("/api/v1/admin/status", h.status)
+
+		r.Group(func(r chi.Router) {
+			r.Use(h.Auth.RequireCSRF, byMethod(reads, writes))
+			r.HandleFunc("/api/v1/admin/pastes", methods{http.MethodGet: http.HandlerFunc(h.lookup)}.serve)
+			r.HandleFunc("/api/v1/admin/pastes/{key}", methods{
+				http.MethodGet:    http.HandlerFunc(h.lookup),
+				http.MethodDelete: destructive(h.deletePaste),
+			}.serve)
+			r.HandleFunc("/api/v1/admin/pastes/{key}/content", methods{http.MethodPost: destructive(h.content)}.serve)
+			r.HandleFunc("/api/v1/admin/pastes/{key}/abuse", methods{http.MethodPost: destructive(h.abusePaste)}.serve)
+
+			r.HandleFunc("/api/v1/admin/users", methods{http.MethodGet: http.HandlerFunc(h.users)}.serve)
+			r.HandleFunc("/api/v1/admin/users/{id}", methods{
+				http.MethodGet:    http.HandlerFunc(h.user),
+				http.MethodDelete: destructive(h.deleteUser),
+			}.serve)
+			r.HandleFunc("/api/v1/admin/users/{id}/disable", methods{http.MethodPost: destructive(h.disable)}.serve)
+			r.HandleFunc("/api/v1/admin/users/{id}/enable", methods{http.MethodPost: http.HandlerFunc(h.enable)}.serve)
+			r.HandleFunc("/api/v1/admin/users/{id}/revoke", methods{http.MethodPost: destructive(h.revoke)}.serve)
+
+			r.HandleFunc("/api/v1/admin/bans", methods{
+				http.MethodGet:  http.HandlerFunc(h.bans),
+				http.MethodPost: destructive(h.addBan),
+			}.serve)
+			r.HandleFunc("/api/v1/admin/bans/{kind}/{target}", methods{http.MethodDelete: destructive(h.unban)}.serve)
+
+			r.HandleFunc("/api/v1/admin/events", methods{http.MethodGet: http.HandlerFunc(h.events)}.serve)
+			r.HandleFunc("/api/v1/admin/audit", methods{http.MethodGet: http.HandlerFunc(h.audit)}.serve)
+		})
 		r.HandleFunc("/api/v1/admin/*", auth.NotFound)
 	})
+}
+
+// methods routes a request by its method, 405 for any other. GET also
+// answers HEAD.
+type methods map[string]http.Handler
+
+func (m methods) serve(w http.ResponseWriter, r *http.Request) {
+	method := r.Method
+	if method == http.MethodHead {
+		method = http.MethodGet
+	}
+	if next, ok := m[method]; ok {
+		next.ServeHTTP(w, r)
+		return
+	}
+	allow := make([]string, 0, len(m)+1)
+	for name := range m {
+		allow = append(allow, name)
+		if name == http.MethodGet {
+			allow = append(allow, http.MethodHead)
+		}
+	}
+	sort.Strings(allow)
+	w.Header().Set("Allow", strings.Join(allow, ", "))
+	writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
+}
+
+// byMethod sends reads (GET, HEAD) through one limiter and every other method through another
+func byMethod(reads, writes func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		r, w := reads(next), writes(next)
+		return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+			if req.Method == http.MethodGet || req.Method == http.MethodHead {
+				r.ServeHTTP(rw, req)
+				return
+			}
+			w.ServeHTTP(rw, req)
+		})
+	}
 }
 
 func noStore(next http.Handler) http.Handler {

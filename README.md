@@ -135,6 +135,57 @@ For large files, an assistant that has a shell does better with `curl --data-bin
 
 Opening `/mcp` in a browser returns a short hint (HTTP 405) instead of the web page.
 
+### With an API token
+
+Without a token `/mcp` works as described above: anonymous and public. With one of your [API tokens](#api-tokens-and-curl) in an `Authorization: Bearer` header, the assistant works as you:
+
+- `upload_log` makes pastes that are yours. They count against your own limits and quota, show up in your dashboard and never expire unless you set `expires_at`. It also takes `title`, `visibility` (`link` or `private`, by default the one set on your Account tab), `expires_at` (an RFC 3339 time in the future) and `tags` (up to 10, same rules as `X-Paste-Tags`).
+- `read_paste` and `search_paste` also read your private pastes. Reading your own paste is not counted as a view and does not end its edit window.
+- `list_my_pastes` takes `query` (title, key or language, never the content), `tags` (all must match) and `page`. It returns your own pastes, newest first, 20 per page: key, URL, title, language, visibility, size, creation and expiry time, tags and version. Never the content.
+- The server tells the assistant whose token it is and which visibility new pastes get.
+
+There are no tools to delete or edit pastes. That stays in the dashboard.
+
+Claude Code:
+
+```sh
+claude mcp add --transport http hastebin https://paste.superkali.me/mcp --header "Authorization: Bearer hbp_..."
+```
+
+Cursor (`~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "hastebin": {
+      "url": "https://paste.superkali.me/mcp",
+      "headers": { "Authorization": "Bearer hbp_..." }
+    }
+  }
+}
+```
+
+VS Code (`.vscode/mcp.json`). The input asks for the token once, so it is not written in the file:
+
+```json
+{
+  "inputs": [
+    { "type": "promptString", "id": "hastebin-token", "description": "hastebin API token", "password": true }
+  ],
+  "servers": {
+    "hastebin": {
+      "type": "http",
+      "url": "https://paste.superkali.me/mcp",
+      "headers": { "Authorization": "Bearer ${input:hastebin-token}" }
+    }
+  }
+}
+```
+
+Custom connectors in claude.ai and Claude Desktop cannot send a header, so they stay anonymous until MCP login with OAuth arrives. `/mcp/u` is kept for it and answers 404 for now.
+
+A token that is malformed, unknown, revoked or belongs to a disabled account gets 401 with `WWW-Authenticate: Bearer realm="hastebin", error="invalid_token"`, never an anonymous answer. The token is read only from the header, never from the URL, and a login cookie does not count on `/mcp`. Each account may send 120 requests a minute to `/mcp`, on top of the limits per client; more get 429 with `Retry-After`.
+
 ## Run it
 
 ### Docker
@@ -260,6 +311,8 @@ Settings come from `config.yaml` (or the file given with `--config`). An environ
 | `user_storage_limit` | `USER_STORAGE_LIMIT` | `5368709120` | Bytes the pastes of one user may take in all (5 GiB). `-1` means no limit |
 | `user_max_pastes` | `USER_MAX_PASTES` | `10000` | Pastes one user may keep. `-1` means no limit |
 | `max_tokens_per_user` | `MAX_TOKENS_PER_USER` | `20` | API tokens one user may have, 1 to 1000 |
+| `edit_window` | `EDIT_WINDOW` | `600` | Seconds after creation the owner may change a registered paste under the same link, until someone else opens it. `0` turns same-link editing off |
+| `edit_max_revisions` | `EDIT_MAX_REVISIONS` | `20` | Older texts one registered paste keeps from same-link edits, 1 to 1000. Past it, changes go to a new version |
 
 **expiration.** Seconds, 0 or more. Each view starts the lifetime again, so a paste goes away after that many seconds without being read. The `redis`, `memcached`, `mongodb` and `postgres` backends hand it to the database. The `file` backend checks the file's modification time: a read refreshes it, an older file is no longer served, and every 10 minutes a janitor deletes those files. **Turning `EXPIRATION` on with `file` storage deletes the pastes you already have that are older than that age**, so back up the data folder first if you want to keep them. The `s3` backend ignores it: use a bucket lifecycle rule. Pages from `documents` never expire.
 
@@ -359,7 +412,7 @@ A paste saved on the web page while you are logged in, or uploaded with one of y
 
 The dashboard at `/dashboard` lists your pastes, 25 per page, with search on title, key and language, filters for visibility, language and tags, and sorting. From there you delete one paste or many at once. A deleted paste is gone from the list at once; its content is removed from the store right after. The Account tab shows your usage and limits, sets whether new pastes are shared by link or private, logs you out everywhere (and can revoke every token at the same time), exports the details of your pastes as JSON, and deletes the account with everything in it.
 
-The dashboard API under `/api/v1` needs a login session: every change also needs the `X-CSRF-Token` header from `GET /api/v1/session` and a JSON body. API tokens do not work there; they are for uploads and, later, MCP. Each user may make 120 reads and 30 changes a minute, create 10 tokens an hour and try to delete the account 3 times a day.
+The dashboard API under `/api/v1` needs a login session: every change also needs the `X-CSRF-Token` header from `GET /api/v1/session` and a JSON body. API tokens do not work there; they are for uploads and [MCP](#with-an-api-token). Each user may make 120 reads and 30 changes a minute, create 10 tokens an hour and try to delete the account 3 times a day.
 
 ### API tokens and curl
 

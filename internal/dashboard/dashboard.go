@@ -5,6 +5,7 @@
 package dashboard
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/armbian/ansi-hastebin/handler"
+	"github.com/armbian/ansi-hastebin/internal/abuse"
 	"github.com/armbian/ansi-hastebin/internal/accounts"
 	"github.com/armbian/ansi-hastebin/internal/auth"
 	"github.com/go-chi/chi/v5"
@@ -77,28 +80,56 @@ type Handler struct {
 	// Drainer deletes the store objects of deleted pastes; nil leaves them queued
 	Drainer *accounts.Drainer
 
+	// Events records the rate limited requests for the admin page; nil records nothing
+	Events *abuse.Events
+
+	// Docs stores the content of edits, new versions and duplicates, with
+	// the upload limits of /documents. Locks is the key lock the Gate takes
+	// to end the edit window, so an edit and that read never overlap.
+	Docs  *handler.DocumentHandler
+	Locks *KeyLocks
+
+	// EditWindow is how long after creation the owner may edit a paste
+	// under the same link, until someone else opens it; 0 means never.
+	// MaxRevisions is how many older contents one paste keeps, 0 for no limit.
+	EditWindow   time.Duration
+	MaxRevisions int
+
 	// now is the clock, replaced in tests
 	now func() time.Time
+
+	// recordEdit records an edit in the database, replaced in tests
+	recordEdit func(ctx context.Context, e accounts.Edit, limits accounts.Limits) (*accounts.Paste, error)
 
 	reads, writes, tokenCreates, deletes func(http.Handler) http.Handler
 }
 
 // New returns the handler of the dashboard API
 func New(svc *auth.Service, db *accounts.DB, limits Limits, drainer *accounts.Drainer) *Handler {
-	d := &Handler{Auth: svc, DB: db, Limits: limits, Drainer: drainer, now: time.Now}
-	d.reads = userLimit(readLimit, readWindow)
-	d.writes = userLimit(writeLimit, writeWindow)
-	d.tokenCreates = userLimit(tokenCreateLimit, tokenCreateWindow)
-	d.deletes = userLimit(deleteLimit, deleteWindow)
+	d := &Handler{Auth: svc, DB: db, Limits: limits, Drainer: drainer, now: time.Now, recordEdit: db.RecordEdit}
+	d.reads = UserLimit(readLimit, readWindow, d.limited)
+	d.writes = UserLimit(writeLimit, writeWindow, d.limited)
+	d.tokenCreates = UserLimit(tokenCreateLimit, tokenCreateWindow, d.limited)
+	d.deletes = UserLimit(deleteLimit, deleteWindow, d.limited)
 	return d
 }
 
-// userLimit allows each user limit requests per window, counted by user id
-// whatever address they come from. It needs RequireSession first.
-func userLimit(limit int, window time.Duration) func(http.Handler) http.Handler {
+// limited records a request refused by a per user limit
+func (d *Handler) limited(r *http.Request) {
+	d.Events.Record(abuse.KindRateLimit, handler.ClientKey(handler.ClientIP(r)),
+		"user "+strconv.FormatInt(auth.FromContext(r.Context()).User.ID, 10))
+}
+
+// UserLimit allows each user limit requests per window, counted by user id
+// whatever address they come from, and calls refused, when set, for each
+// request it refuses. It needs RequireSession first.
+func UserLimit(limit int, window time.Duration, refused func(*http.Request)) func(http.Handler) http.Handler {
 	return httprate.LimitBy(limit, window, func(r *http.Request) (string, error) {
 		return "u:" + strconv.FormatInt(auth.FromContext(r.Context()).User.ID, 10), nil
 	}, httprate.WithLimitHandler(func(w http.ResponseWriter, r *http.Request) {
+		if refused != nil {
+			refused(r)
+		}
 		WriteError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests, try again in a moment.")
 	}))
 }
@@ -144,6 +175,8 @@ func (d *Handler) RegisterRoutes(r chi.Router) {
 		r.Patch("/api/v1/pastes/{key}", d.handlePatch)
 		r.Delete("/api/v1/pastes/{key}", d.handleDelete)
 		r.Get("/api/v1/tags", d.handleTags)
+		r.Post("/api/v1/pastes/{key}/duplicate", d.handleDuplicate)
+		r.Get("/api/v1/pastes/{key}/revisions/{n}", d.handleRevision)
 
 		r.Get("/api/v1/tokens", d.handleTokens)
 		r.With(d.tokenCreates).Post("/api/v1/tokens", d.handleCreateToken)
@@ -153,6 +186,15 @@ func (d *Handler) RegisterRoutes(r chi.Router) {
 		r.Patch("/api/v1/account", d.handlePatchAccount)
 		r.Get("/api/v1/account/export", d.handleExport)
 		r.With(d.deletes).Delete("/api/v1/account", d.handleDeleteAccount)
+	})
+
+	// The body of these is the content of a paste, of any type, received
+	// like an upload to /documents
+	r.Group(func(r chi.Router) {
+		r.Use(handler.NoStore, sessionOnly, d.Auth.LoadSession, d.Auth.RequireSession, d.Auth.RequireCSRFRaw, d.writes)
+
+		r.Put("/api/v1/pastes/{key}/content", d.handleEditContent)
+		r.Post("/api/v1/pastes/{key}/versions", d.handleNewVersion)
 	})
 }
 
@@ -238,26 +280,26 @@ type Item struct {
 	Tags          []string   `json:"tags"`
 }
 
-// item is the API form of a paste. Editing comes later: editable_until
-// stays null until then.
-func item(p *accounts.Paste) Item {
+// item is the API form of a paste
+func (d *Handler) item(p *accounts.Paste) Item {
 	return Item{
-		Key:          p.Key,
-		Title:        p.Title,
-		Language:     p.Language,
-		Visibility:   VisibilityName(p.Visibility),
-		Size:         p.Size,
-		CreatedAt:    p.CreatedAt,
-		ExpiresAt:    timePtr(p.ExpiresAt),
-		EditedAt:     timePtr(p.EditedAt),
-		EditCount:    p.EditCount,
-		Views:        p.Views,
-		LastOpenedAt: timePtr(p.LastOpenedAt),
-		Version:      p.Version,
-		RootKey:      p.RootKey,
-		PrevKey:      stringPtr(p.PrevKey),
-		NextKey:      stringPtr(p.NextKey),
-		Tags:         p.Tags,
+		EditableUntil: timePtr(d.editableUntil(p, d.now())),
+		Key:           p.Key,
+		Title:         p.Title,
+		Language:      p.Language,
+		Visibility:    VisibilityName(p.Visibility),
+		Size:          p.Size,
+		CreatedAt:     p.CreatedAt,
+		ExpiresAt:     timePtr(p.ExpiresAt),
+		EditedAt:      timePtr(p.EditedAt),
+		EditCount:     p.EditCount,
+		Views:         p.Views,
+		LastOpenedAt:  timePtr(p.LastOpenedAt),
+		Version:       p.Version,
+		RootKey:       p.RootKey,
+		PrevKey:       stringPtr(p.PrevKey),
+		NextKey:       stringPtr(p.NextKey),
+		Tags:          p.Tags,
 	}
 }
 
@@ -331,7 +373,7 @@ func (d *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]Item, 0, len(list))
 	for _, p := range list {
-		items = append(items, item(p))
+		items = append(items, d.item(p))
 	}
 	pages := max((total+PerPage-1)/PerPage, 1)
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "page": q.Page, "pages": pages, "total": total})
@@ -342,10 +384,13 @@ func pasteKey(r *http.Request) string {
 	return chi.URLParam(r, "key")
 }
 
-// handleGet answers GET /api/v1/pastes/{key}: the paste with its revisions
-// and the chain of its versions
+// handleGet answers GET /api/v1/pastes/{key}: the paste with its revisions,
+// the chain of its versions, the server time to count the edit window down
+// from, the window length, why editing under the same link is over (seen,
+// expired, null while open) and how many revisions a paste may keep
 func (d *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	now := d.now()
 	u := user(r)
 	p, err := d.DB.PasteByKey(ctx, u.ID, pasteKey(r))
 	if err != nil {
@@ -374,9 +419,14 @@ func (d *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	out := struct {
 		Item
-		Revisions []revision `json:"revisions"`
-		Versions  []version  `json:"versions"`
-	}{Item: item(p), Revisions: []revision{}, Versions: []version{}}
+		Revisions    []revision `json:"revisions"`
+		Versions     []version  `json:"versions"`
+		ServerNow    time.Time  `json:"server_now"`
+		EditWindow   int64      `json:"edit_window"`
+		EditClosed   *string    `json:"edit_closed"`
+		MaxRevisions int        `json:"max_revisions"`
+	}{Item: d.item(p), Revisions: []revision{}, Versions: []version{}, ServerNow: now.UTC().Truncate(time.Second),
+		EditWindow: int64(d.EditWindow / time.Second), EditClosed: stringPtr(d.closedReason(p, now)), MaxRevisions: d.MaxRevisions}
 	for _, rev := range revisions {
 		out.Revisions = append(out.Revisions, revision{rev.Rev, rev.Size, rev.CreatedAt})
 	}
@@ -458,7 +508,7 @@ func (d *Handler) handlePatch(w http.ResponseWriter, r *http.Request) {
 		writeDBError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, item(p))
+	writeJSON(w, http.StatusOK, d.item(p))
 }
 
 // handleDelete answers DELETE /api/v1/pastes/{key}: the row goes at once,

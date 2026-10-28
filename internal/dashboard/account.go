@@ -211,7 +211,7 @@ func (d *Handler) handleExport(w http.ResponseWriter, r *http.Request) {
 		if first {
 			prefix, first = "", false
 		}
-		return write(prefix, item(p))
+		return write(prefix, d.item(p))
 	})
 	if err != nil {
 		// The status is sent already: a cut file is the signal, and the log says why

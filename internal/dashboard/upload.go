@@ -21,18 +21,29 @@ const commitTimeout = 10 * time.Second
 // pasteMeta is what the X-Paste-* headers of an upload set
 type pasteMeta struct {
 	title      string
+	language   string
 	visibility int
 	expires    time.Time
 	tags       []string
 }
 
-// parseUploadHeaders reads X-Paste-Title, X-Paste-Tags, X-Paste-Visibility
-// and X-Paste-Expires. A missing visibility is the user's default.
+// parseUploadHeaders reads X-Paste-Title, X-Paste-Language, X-Paste-Tags,
+// X-Paste-Visibility and X-Paste-Expires. A missing visibility is the user's
+// default. Without X-Paste-Language the language comes from the extension
+// in ?ext=, as curl sends a file name, when there is a usable one.
 func parseUploadHeaders(r *http.Request, defaultVisibility int, now time.Time) (pasteMeta, error) {
 	meta := pasteMeta{visibility: defaultVisibility}
 	var err error
 	if meta.title, err = NormalizeTitle(r.Header.Get("X-Paste-Title")); err != nil {
 		return meta, err
+	}
+	if v := r.Header.Get("X-Paste-Language"); v != "" {
+		if meta.language, err = NormalizeLanguage(v); err != nil {
+			return meta, err
+		}
+	} else if ext := r.URL.Query().Get("ext"); ext != "" {
+		// Only a hint: one that names no usable language is left out
+		meta.language, _ = NormalizeLanguage(handler.LanguageOfExtension(ext))
 	}
 	if meta.tags, err = NormalizeTags(SplitTags(r.Header.Values("X-Paste-Tags"))); err != nil {
 		return meta, err
@@ -110,15 +121,33 @@ func (d *Handler) Uploaders(w http.ResponseWriter, r *http.Request) (handler.Upl
 		return anonymous, false
 	}
 
+	u, ok := d.ownedUploader(w, r, p, true)
+	if !ok {
+		return anonymous, false
+	}
+	u.Commit = func(key string, size int64) error {
+		return d.commit(r, p, meta, key, size)
+	}
+	return u, true
+}
+
+// ownedUploader is the Uploader of content p stores in their account: the
+// user's quota, pinned, at most what the account may still store. Over the
+// user's limits it answers and returns false; the paste count counts only
+// for a new paste. Commit is left to the caller.
+func (d *Handler) ownedUploader(w http.ResponseWriter, r *http.Request, p *auth.Principal, newPaste bool) (handler.Uploader, bool) {
 	count, bytes, err := d.DB.Usage(r.Context(), p.User.ID)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to read the usage of an account")
 		writeBusy(w)
-		return anonymous, false
+		return handler.Uploader{}, false
+	}
+	if !newPaste {
+		count = 0
 	}
 	if msg, status := d.overLimits(count, bytes); status != 0 {
 		writeMessage(w, status, msg)
-		return anonymous, false
+		return handler.Uploader{}, false
 	}
 	maxLength := d.Limits.MaxLength
 	if d.Limits.MaxBytes > 0 {
@@ -126,17 +155,12 @@ func (d *Handler) Uploaders(w http.ResponseWriter, r *http.Request) (handler.Upl
 			maxLength = int(left)
 		}
 	}
-
-	userID := p.User.ID
 	return handler.Uploader{
-		IP:        anonymous.IP,
-		QuotaKey:  "u:" + strconv.FormatInt(userID, 10),
-		Owner:     userID,
+		IP:        handler.ClientIP(r),
+		QuotaKey:  "u:" + strconv.FormatInt(p.User.ID, 10),
+		Owner:     p.User.ID,
 		Pin:       true,
 		MaxLength: maxLength,
-		Commit: func(key string, size int64) error {
-			return d.commit(r, p, meta, key, size)
-		},
 	}, true
 }
 
@@ -162,6 +186,7 @@ func (d *Handler) commit(r *http.Request, p *auth.Principal, meta pasteMeta, key
 		Key:        key,
 		UserID:     p.User.ID,
 		Title:      meta.title,
+		Language:   meta.language,
 		Visibility: meta.visibility,
 		ExpiresAt:  meta.expires,
 		Size:       size,
@@ -172,28 +197,44 @@ func (d *Handler) commit(r *http.Request, p *auth.Principal, meta pasteMeta, key
 	} else if p.Session != nil {
 		row.SessionHash = p.Session.IDHash
 	}
-	err := d.DB.InsertPaste(ctx, row, accounts.Limits{MaxPastes: d.Limits.MaxPastes, MaxBytes: d.Limits.MaxBytes})
-	switch {
-	case err == nil:
+	err := d.DB.InsertPaste(ctx, row, d.accountLimits())
+	if err == nil {
 		log.Info().Int64("user_id", p.User.ID).Int64("size", size).Bool("token", p.Token != nil).Msg("Owned paste stored")
 		return nil
+	}
+	return d.refused(p, err, "Failed to record an owned paste")
+}
+
+// accountLimits are the limits a user's pastes are held to in the database
+func (d *Handler) accountLimits() accounts.Limits {
+	return accounts.Limits{MaxPastes: d.Limits.MaxPastes, MaxBytes: d.Limits.MaxBytes}
+}
+
+// refused turns a failure to record the content of p into the answer the
+// upload gets: an *handler.UploadRefused, or err itself (500), logged with what
+func (d *Handler) refused(p *auth.Principal, err error, what string) error {
+	switch {
 	case errors.Is(err, accounts.ErrRevoked):
 		if p.Token != nil {
 			return &handler.UploadRefused{Status: http.StatusUnauthorized, Message: "The API token is invalid or revoked.",
 				Header: map[string]string{"WWW-Authenticate": `Bearer realm="hastebin", error="invalid_token"`}}
 		}
 		return &handler.UploadRefused{Status: http.StatusUnauthorized, Message: "Your session ended during the upload. Log in again."}
+	case errors.Is(err, accounts.ErrUserDisabled):
+		return &handler.UploadRefused{Status: http.StatusForbidden, Message: "This account is disabled."}
 	case errors.Is(err, accounts.ErrPasteLimit):
 		msg, status := d.overLimits(d.Limits.MaxPastes, 0)
 		return &handler.UploadRefused{Status: status, Message: msg}
 	case errors.Is(err, accounts.ErrStorageLimit):
 		return &handler.UploadRefused{Status: http.StatusRequestEntityTooLarge,
 			Message: "Your account storage is full. Delete some pastes to upload more."}
+	case errors.Is(err, accounts.ErrNotFound):
+		return &handler.UploadRefused{Status: http.StatusNotFound, Message: "Not found."}
 	case accounts.IsBusy(err) || errors.Is(err, context.DeadlineExceeded):
-		log.Warn().Err(err).Msg("Owned paste not recorded, the database is busy")
+		log.Warn().Err(err).Msg(what + ", the database is busy")
 		return &handler.UploadRefused{Status: http.StatusServiceUnavailable, Message: "The server is busy, try again shortly.",
 			Header: map[string]string{"Retry-After": "5"}}
 	}
-	log.Error().Err(err).Msg("Failed to record an owned paste")
+	log.Error().Err(err).Msg(what)
 	return err
 }

@@ -544,7 +544,8 @@ func TestDashboardList(t *testing.T) {
 	item := decode[map[string]any](t, rec)
 	require.Equal(t, []any{}, item["revisions"])
 	require.Len(t, item["versions"], 1)
-	require.Nil(t, item["editable_until"])
+	require.NotNil(t, item["editable_until"], "new and opened by no one else: editable under the same link")
+	require.Nil(t, item["edit_closed"])
 
 	// PATCH: validated, partial
 	rec = d.api(http.MethodPatch, "/api/v1/pastes/key03", alice, map[string]any{

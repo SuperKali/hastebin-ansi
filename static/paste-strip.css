@@ -1,0 +1,130 @@
+/* The strip under the button bar of a paste: owner actions and "edited at" */
+
+#paste-strip {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    display: flex;
+    align-items: stretch;
+    background: #08323c;
+    border-top: 1px solid #174b57;
+    border-bottom-left-radius: 6px;
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.3);
+    color: #c4dce3;
+    font-family: Helvetica, Arial, sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+    white-space: nowrap;
+    animation: ps-in 0.18s ease-out both;
+}
+
+#paste-strip[hidden] {
+    display: none;
+}
+
+#paste-strip .ps-owner {
+    display: flex;
+}
+
+#paste-strip .ps-owner[hidden] {
+    display: none;
+}
+
+#paste-strip a,
+#paste-strip button,
+#paste-strip .ps-edited {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    padding: 7px 11px;
+    border: 0;
+    border-left: 1px solid #174b57;
+    background: transparent;
+    color: #93a1a1;
+    font: inherit;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+#paste-strip .ps-owner > :first-child {
+    border-left: 0;
+}
+
+#paste-strip a:hover,
+#paste-strip button:hover {
+    background: #0b3f4b;
+    color: #fff;
+}
+
+#paste-strip a:focus-visible,
+#paste-strip button:focus-visible {
+    outline: 2px solid #4fc1b5;
+    outline-offset: -2px;
+}
+
+#paste-strip .ps-edit.open {
+    color: #4fc1b5;
+    font-family: 'Fira Code', ui-monospace, monospace;
+    font-size: 11.5px;
+}
+
+#paste-strip .ps-edit.open svg {
+    animation: ps-nib 2.4s ease-in-out infinite;
+}
+
+#paste-strip .ps-vis .ps-lock,
+#paste-strip .ps-vis.private .ps-link {
+    display: none;
+}
+
+#paste-strip .ps-vis.private .ps-lock {
+    display: inline;
+}
+
+#paste-strip .ps-vis.private {
+    color: #d9a800;
+}
+
+#paste-strip .ps-edited {
+    cursor: default;
+    color: #93a1a1;
+    font-style: italic;
+}
+
+#paste-strip .ps-owner:not([hidden]) + .ps-edited {
+    border-left: 1px solid #174b57;
+}
+
+#paste-strip .ps-owner[hidden] + .ps-edited {
+    border-left: 0;
+}
+
+@keyframes ps-in {
+    from { opacity: 0; transform: translateY(-4px); }
+}
+
+@keyframes ps-nib {
+    0%, 70%, 100% { transform: rotate(0); }
+    80% { transform: rotate(-12deg); }
+    90% { transform: rotate(8deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #paste-strip,
+    #paste-strip .ps-edit.open svg {
+        animation: none;
+    }
+}
+
+@media (max-width: 600px) {
+    #paste-strip a,
+    #paste-strip button,
+    #paste-strip .ps-edited {
+        padding: 7px 8px;
+    }
+
+    #paste-strip .ps-dash-text {
+        display: none;
+    }
+}

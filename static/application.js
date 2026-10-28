@@ -46,6 +46,11 @@ haste_document.prototype.load = function (key, callback, lang) {
             _this.locked = true;
             _this.key = key;
             _this.data = res.data;
+            // Owner and edit marks, for the strip under the buttons
+            _this.meta = {
+                owner: res.owner === true, visibility: res.visibility, editable_until: res.editable_until,
+                server_now: res.server_now, edited_at: res.edited_at
+            };
             // A paste over 1 MiB comes cut to its first 1 MiB; /raw has the whole file
             _this.truncated = res.truncated === true;
 
@@ -99,15 +104,19 @@ haste_document.prototype.save = function (data, callback) {
     }
     this.data = data;
     var _this = this;
-    // Logged in, the CSRF token makes the paste yours; without it the paste is anonymous
+    // Guessing the language of a large paste would freeze the browser
+    var preview = haste_document.largePreview(data);
+    var high = preview === null ? hljs.highlightAuto(data) : {value: _this.htmlEscape(preview)};
+    // Logged in, the CSRF token makes the paste yours; without it the paste is anonymous.
+    // An owned paste keeps the language its link gets, for the dashboard.
     var headers = haste_document.csrf ? {'X-CSRF-Token': haste_document.csrf} : {};
+    if (haste_document.csrf && /^[a-z0-9][a-z0-9+#._-]{0,31}$/.test(high.language || '')) {
+        headers['X-Paste-Language'] = high.language;
+    }
     $.ajax('/documents', {
         type: 'post', data: data, dataType: 'json', contentType: 'text/plain; charset=utf-8', headers: headers, success: function (res) {
             _this.locked = true;
             _this.key = res.key;
-            // Guessing the language of a large paste would freeze the browser
-            var preview = haste_document.largePreview(data);
-            var high = preview === null ? hljs.highlightAuto(data) : {value: _this.htmlEscape(preview)};
             callback(null, {
                 value: high.value, key: res.key, language: high.language,
                 lineCount: (preview === null ? data : preview).split('\n').length,
@@ -193,6 +202,7 @@ haste.prototype.newDocument = function (hideHistory) {
     this.setTitle();
     this.lightKey();
     this.hideLargeNotice();
+    paste_strip.hide();
     this.$textarea.val('').show('fast', function () {
         this.focus();
     });
@@ -314,6 +324,7 @@ haste.prototype.loadDocument = function (key) {
             } else {
                 _this.hideLargeNotice();
             }
+            paste_strip.show(_this.doc.meta, ret.key);
         } else {
             _this.newDocument();
         }
@@ -365,6 +376,10 @@ haste.prototype.lockDocument = function () {
             if (ret.large) {
                 _this.showLargeNotice(ret.key, ret.size);
             }
+            // Saved logged in: the paste is yours, with its edit window
+            if (haste_document.csrf) {
+                paste_strip.load(ret.key);
+            }
         }
     });
 };
@@ -409,14 +424,13 @@ haste.prototype.configureButtons = function () {
                 _this.mcpPanel.open();
             }
         }
-    }, this.accountButton = {
-        $where: $('#box2 .account'), label: 'Log in', shortcutDescription: 'with GitHub', action: function () {
-            window.location.href = _this.accountHref();
-        }
     }];
     for (var i = 0; i < this.buttons.length; i++) {
         this.configureButton(this.buttons[i]);
     }
+    // The account control opens its own menu: it only shares the label
+    this.accountLabel = {$where: $('#box2 .account'), label: 'Sign in', shortcutDescription: 'with GitHub'};
+    this.configureLabel(this.accountLabel);
 };
 
 haste.prototype.configureButton = function (options) {
@@ -427,17 +441,25 @@ haste.prototype.configureButton = function (options) {
             options.action();
         }
     });
-    // Show the label, on hover and on keyboard focus
+    this.configureLabel(options);
+};
+
+// Show the label of a button under the bar, on hover and on keyboard focus.
+// Not while a menu of the button is open: it would sit under the menu.
+haste.prototype.configureLabel = function (options) {
     var showLabel = function () {
+        if ($(this).find('[aria-expanded="true"]').length) {
+            return;
+        }
         $('#box3 .label').text(options.label);
         $('#box3 .shortcut').text(options.shortcutDescription || '');
         $('#box3').show();
         $(this).append($('#pointer').remove().show());
     };
     options.$where.on('mouseenter', showLabel);
-    options.$where.on('focus', function () {
+    options.$where.on('focusin', function (evt) {
         try {
-            if (!this.matches(':focus-visible')) {
+            if (!evt.target.matches(':focus-visible')) {
                 return;
             }
         } catch (e) { /* old browser without :focus-visible */
@@ -445,7 +467,7 @@ haste.prototype.configureButton = function (options) {
         showLabel.call(this);
     });
     // Hide the label
-    options.$where.on('mouseleave blur', function () {
+    options.$where.on('mouseleave focusout acctopen', function () {
         $('#box3').hide();
         $('#pointer').hide();
     });
@@ -489,45 +511,60 @@ haste.prototype.loadInfo = function () {
     });
 };
 
-// Where the account button goes: the dashboard when logged in, else the
-// GitHub login, coming back to the page shown now
-haste.prototype.accountHref = function () {
-    if (this.user) {
-        return '/dashboard';
-    }
-    return '/auth/github/login?return=' + encodeURIComponent(window.location.pathname);
-};
-
-// Ask who is logged in and set the account button up for it
+// Ask who is logged in and set the account control up for it
 haste.prototype.loadSession = function () {
     var _this = this;
     $.ajax('/api/v1/session', {
         type: 'get', dataType: 'json', success: function (session) {
-            _this.user = session && session.user ? session.user : null;
-            haste_document.csrf = _this.user && session.csrf ? session.csrf : null;
+            _this.session = session && session.user ? session : null;
+            haste_document.csrf = _this.session && session.csrf ? session.csrf : null;
             _this.showAccount();
         }, error: function () {
-            _this.user = null;
+            _this.session = null;
             _this.showAccount();
         }
     });
 };
 
+// The account control: the avatar and its menu when logged in, else a
+// "Sign in with GitHub" link that comes back to this page
 haste.prototype.showAccount = function () {
-    var $button = $('#box2 .account');
-    if (this.user) {
-        this.accountButton.label = this.user.login;
-        this.accountButton.shortcutDescription = 'your pastes';
-        $button.attr('aria-label', 'Signed in as ' + this.user.login + ', open your pastes');
-        $button.find('.account-dot').prop('hidden', false);
-    } else {
-        this.accountButton.label = 'Log in';
-        this.accountButton.shortcutDescription = 'with GitHub';
-        $button.attr('aria-label', 'Log in with GitHub');
-        $button.find('.account-dot').prop('hidden', true);
+    var _this = this;
+    var $slot = $('#box2 .account');
+    if (!this.accountMenu) {
+        this.accountMenu = account_menu.mount($slot, {
+            compact: true,
+            bar: '#box2',
+            newPaste: function () {
+                _this.newDocument(!_this.doc.key);
+            },
+            onLogout: function () {
+                _this.loggedOut();
+            }
+        });
     }
-    $button.attr('href', this.accountHref()).prop('hidden', false);
+    if (this.session) {
+        this.accountLabel.label = this.session.user.login;
+        this.accountLabel.shortcutDescription = 'your account';
+    } else {
+        this.accountLabel.label = 'Sign in';
+        this.accountLabel.shortcutDescription = 'with GitHub';
+    }
+    this.accountMenu.render(this.session, true);
     $(document.body).addClass('account-on');
+};
+
+// After logging out from the menu: reload, so nothing of the account stays
+// on the page, unless that would lose a paste being written
+haste.prototype.loggedOut = function () {
+    if (!this.doc.locked && $.trim(this.$textarea.val()) !== '') {
+        this.session = null;
+        haste_document.csrf = null;
+        this.showAccount();
+        this.showMessage('You are logged out. Your text is still here.');
+        return;
+    }
+    window.location.reload();
 };
 
 ///// The "AI / MCP" panel: how to add this server to an AI assistant

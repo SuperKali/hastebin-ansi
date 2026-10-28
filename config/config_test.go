@@ -360,6 +360,8 @@ func TestNewConfig_InvalidValuesAreFatal(t *testing.T) {
 		{"USER_MAX_PASTES", "-2", "user_max_pastes must be 1 or more"},
 		{"MAX_TOKENS_PER_USER", "1001", "max_tokens_per_user must be 1 to 1000"},
 		{"EDIT_WINDOW", "-1", "edit_window must be 0"},
+		{"EDIT_MAX_REVISIONS", "1001", "edit_max_revisions must be 1 to 1000"},
+		{"EDIT_MAX_REVISIONS", "-1", "edit_max_revisions must be 1 to 1000"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.env, func(t *testing.T) {
@@ -470,6 +472,12 @@ func TestEffectiveRedactsSecrets(t *testing.T) {
 	require.Equal(t, 2592000, values["session_ttl"])
 	require.NotContains(t, fmt.Sprint(cfg.Effective()), "very-secret-value")
 	require.NotContains(t, fmt.Sprint(cfg.Effective()), "db-password")
+}
+
+func TestNewConfig_EditMaxRevisions(t *testing.T) {
+	require.Equal(t, 20, NewConfig("nonexistent.yaml").EditMaxRevisions)
+	t.Setenv("EDIT_MAX_REVISIONS", "5")
+	require.Equal(t, 5, NewConfig("nonexistent.yaml").EditMaxRevisions)
 }
 
 func TestNewConfig_EditWindow(t *testing.T) {
