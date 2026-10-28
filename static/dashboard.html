@@ -10,44 +10,456 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/fira_code.css"
         integrity="sha512-LaxQmGd9k/pW51CsEy2nLIlbUXCgsyvUEVT5fSguN2b2OBwHjMi2aiUdEEXSMg8Jvy+bCB01as61aNrHnL2DYQ=="
         crossorigin="anonymous" referrerpolicy="no-referrer" />
-    <link rel="stylesheet" type="text/css" href="/dashboard.css?v=0.2.0" />
+    <link rel="stylesheet" type="text/css" href="/dashboard.css?v=0.3.0" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"
         integrity="sha512-v2CJ7UaYy4JwqLDIrZUI/4hqeoQieOmAZNXBeQyjo21dadnwR+8ZaIJVT8EE2iyI61OV8e6M8PP2/4hpQINQ/g=="
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-    <script src="/dashboard.js?v=0.2.0"></script>
+    <script src="/dashboard.js?v=0.3.0"></script>
 </head>
 
-<body>
+<body class="loading">
+    <a class="skip" href="#main">Skip to content</a>
     <header class="top">
         <a class="brand" href="/">
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
                 <path fill="currentColor" d="M5 3h9l5 5v13H5zm8 1.5V9h4.5zM8 12h8v1.6H8zm0 3.2h8v1.6H8z"/>
             </svg>
-            hastebin
+            <span class="brand-name">hastebin</span>
         </a>
-        <span class="who"></span>
+        <nav class="tabs" aria-label="Dashboard sections" hidden>
+            <a href="/dashboard" data-tab="pastes">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M5 1h6.5L15 4.5V13H5zm6 1.3v2.7h2.7zM7 7h6v1.1H7zm0 2.4h6v1.1H7zM2 3.5h1.5v10.9H12V16H2z"/>
+                </svg>
+                <span>My pastes</span>
+            </a>
+            <a href="/dashboard/tokens" data-tab="tokens">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M5.5 5a3.5 3.5 0 1 1 3.3 4.7L8 10.5H6.5V12H5v1.5H2v-2.6l3.6-3.6A3.5 3.5 0 0 1 5.5 5zm4 -1.5a1.2 1.2 0 1 0 0 2.4 1.2 1.2 0 0 0 0-2.4z"/>
+                </svg>
+                <span>Tokens</span>
+            </a>
+            <a href="/dashboard/account" data-tab="account">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M8 1.5a3.2 3.2 0 1 1 0 6.4 3.2 3.2 0 0 1 0-6.4zM2 14c0-2.9 2.7-4.6 6-4.6s6 1.7 6 4.6v.8H2z"/>
+                </svg>
+                <span>Account</span>
+            </a>
+        </nav>
+        <div class="top-end">
+            <a class="btn ghost small admin-link" href="/admin" hidden>Admin</a>
+            <span class="who"></span>
+            <button type="button" class="btn ghost small logout" hidden>Log out</button>
+        </div>
     </header>
 
-    <main class="narrow">
-        <section class="card hero" aria-labelledby="dash-title">
+    <main id="main" tabindex="-1">
+        <p class="notice" role="alert" hidden></p>
+
+        <!-- Logged out -->
+        <section class="card hero" id="signed-out" aria-labelledby="out-title" hidden>
             <svg class="hero-glyph" viewBox="0 0 64 64" width="64" height="64" aria-hidden="true" focusable="false">
                 <rect x="10" y="14" width="34" height="42" rx="5" fill="currentColor" opacity="0.25"/>
                 <rect x="18" y="8" width="36" height="44" rx="5" fill="none" stroke="currentColor" stroke-width="3"/>
                 <path d="M26 22h20M26 30h20M26 38h12" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
             </svg>
-            <h1 id="dash-title">Your pastes</h1>
-            <p class="lead">Dashboard coming in the next milestone.</p>
-            <p class="signed-in" hidden>Signed in as <b class="login"></b>.</p>
-            <p class="signed-out" hidden>You are not logged in.</p>
+            <h1 id="out-title">Your pastes</h1>
+            <p class="lead">Log in to keep your pastes, find them again and manage API tokens.</p>
             <div class="actions">
                 <a class="btn" href="/">New paste</a>
-                <a class="btn admin-link" href="/admin" hidden>Admin</a>
-                <button type="button" class="btn ghost logout" hidden>Log out</button>
                 <a class="btn primary login-link" href="/auth/github/login?return=%2Fdashboard" hidden>Log in with GitHub</a>
             </div>
-            <p class="status-line" role="status" aria-live="polite"></p>
+            <p class="status-line login-off" hidden>Login is turned off on this server.</p>
+        </section>
+
+        <!-- My pastes -->
+        <section id="tab-pastes" class="view" aria-labelledby="pastes-title" hidden>
+            <div class="toolbar">
+                <h1 id="pastes-title">My pastes <span class="count"></span></h1>
+                <a class="btn primary new-paste" href="/">
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M7.2 2h1.6v5.2H14v1.6H8.8V14H7.2V8.8H2V7.2h5.2z"/>
+                    </svg>
+                    New paste
+                </a>
+            </div>
+
+            <form class="filters-bar" role="search" autocomplete="off">
+                <label class="search">
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M6.8 1.5a5.3 5.3 0 0 1 4.2 8.5l3.6 3.6-1.1 1.1-3.6-3.6a5.3 5.3 0 1 1-3.1-9.6zm0 1.6a3.7 3.7 0 1 0 0 7.4 3.7 3.7 0 0 0 0-7.4z"/>
+                    </svg>
+                    <span class="sr-only">Search title, key or language</span>
+                    <input type="search" name="q" maxlength="200" placeholder="Search title, key, language" />
+                </label>
+                <details class="filters">
+                    <summary class="btn">
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M1.5 3h13L9.6 8.6V13l-3.2 1.5V8.6z"/>
+                        </svg>
+                        Filters <span class="filter-count"></span>
+                    </summary>
+                    <div class="filter-fields">
+                        <label class="field">
+                            <span>Visibility</span>
+                            <select name="visibility">
+                                <option value="">All</option>
+                                <option value="link">Link</option>
+                                <option value="private">Private</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>Language</span>
+                            <select name="language">
+                                <option value="">Any</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>Tag</span>
+                            <select name="tag">
+                                <option value="">Add a tag</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>Sort</span>
+                            <select name="sort">
+                                <option value="-created">Newest</option>
+                                <option value="created">Oldest</option>
+                                <option value="title">Title A to Z</option>
+                                <option value="-size">Largest</option>
+                                <option value="-views">Most viewed</option>
+                                <option value="-last_opened">Recently opened</option>
+                            </select>
+                        </label>
+                    </div>
+                </details>
+            </form>
+            <div class="active-tags" aria-label="Tag filters" hidden></div>
+
+            <div class="list-card">
+                <table class="pastes">
+                    <caption class="sr-only">Your pastes, 25 per page</caption>
+                    <thead>
+                        <tr>
+                            <th class="c-check" scope="col"><input type="checkbox" class="pick-all" aria-label="Select all on this page" /></th>
+                            <th class="c-title" scope="col">Title / key</th>
+                            <th class="c-lang" scope="col">Lang</th>
+                            <th class="c-vis" scope="col">Visibility</th>
+                            <th class="c-size num" scope="col">Size</th>
+                            <th class="c-views num" scope="col">Views</th>
+                            <th class="c-opened" scope="col">Last opened</th>
+                            <th class="c-created" scope="col">Created</th>
+                            <th class="c-menu" scope="col"><span class="sr-only">Actions</span></th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+                <div class="empty" hidden>
+                    <svg class="empty-glyph" viewBox="0 0 64 64" width="56" height="56" aria-hidden="true" focusable="false">
+                        <rect x="12" y="10" width="40" height="46" rx="6" fill="none" stroke="currentColor" stroke-width="3"/>
+                        <path d="M22 26h20M22 34h14" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+                        <circle cx="46" cy="46" r="10" fill="#002b36" stroke="currentColor" stroke-width="3"/>
+                        <path d="M46 41v10M41 46h10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+                    </svg>
+                    <p class="empty-title"></p>
+                    <p class="empty-text"></p>
+                    <div class="actions">
+                        <a class="btn primary empty-new" href="/">New paste</a>
+                        <button type="button" class="btn clear-filters" hidden>Clear filters</button>
+                        <a class="btn empty-tokens" href="/dashboard/tokens">Upload with curl</a>
+                    </div>
+                </div>
+                <div class="list-foot">
+                    <button type="button" class="btn danger-ghost delete-selected" disabled>
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M6 1h4l.6 1.4H14V4H2V2.4h3.4zM3.2 5h9.6l-.7 10H3.9zm3 1.6v6.8h1.2V6.6zm2.4 0v6.8h1.2V6.6z"/>
+                        </svg>
+                        Delete selected <span class="selected-count">(0)</span>
+                    </button>
+                    <nav class="pager" aria-label="Pages">
+                        <button type="button" class="btn small prev" aria-label="Previous page">
+                            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false">
+                                <path fill="currentColor" d="M10.5 2.5L5 8l5.5 5.5-1.1 1.1L2.8 8l6.6-6.6z"/>
+                            </svg>
+                            Prev
+                        </button>
+                        <span class="page-info" aria-live="polite"></span>
+                        <button type="button" class="btn small next" aria-label="Next page">
+                            Next
+                            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false">
+                                <path fill="currentColor" d="M5.5 2.5L11 8l-5.5 5.5 1.1 1.1L13.2 8 6.6 1.4z"/>
+                            </svg>
+                        </button>
+                    </nav>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tokens -->
+        <section id="tab-tokens" class="view" aria-labelledby="tokens-title" hidden>
+            <div class="toolbar">
+                <h1 id="tokens-title">API tokens <span class="count"></span></h1>
+            </div>
+            <p class="intro">A token lets curl and AI assistants save pastes to your account. Send it in the
+                <code>Authorization: Bearer</code> header, never in a URL. Treat it like a password.</p>
+
+            <section class="card new-token" aria-labelledby="new-token-title">
+                <h2 id="new-token-title">
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M7.2 2h1.6v5.2H14v1.6H8.8V14H7.2V8.8H2V7.2h5.2z"/>
+                    </svg>
+                    Create a token
+                </h2>
+                <form class="inline-form create-token" autocomplete="off">
+                    <label class="field grow">
+                        <span>Name</span>
+                        <input type="text" name="name" maxlength="64" placeholder="laptop, CI, Claude Code" required />
+                    </label>
+                    <button type="submit" class="btn primary">Create token</button>
+                </form>
+            </section>
+
+            <section class="card token-once" aria-labelledby="once-title" tabindex="-1" hidden>
+                <h2 id="once-title">
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M8 1l7.5 13H.5zm-.9 5v4h1.8V6zm0 5.2V13h1.8v-1.8z"/>
+                    </svg>
+                    Copy your token now
+                </h2>
+                <p>It is shown only this once. If you lose it, revoke it and create another.</p>
+                <div class="copyrow">
+                    <code class="snippet token-value"></code>
+                    <button type="button" class="btn small copy">Copy</button>
+                </div>
+                <button type="button" class="btn ghost small once-done">I saved it</button>
+            </section>
+
+            <section class="card" aria-labelledby="use-title">
+                <h2 id="use-title">
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M1 3h14v10H1zm1.5 1.5v7h11v-7zM3.5 6l2.5 2-2.5 2-.8-1L4.4 8 2.7 7zM7 9.5h4v1H7z"/>
+                    </svg>
+                    Use a token
+                </h2>
+                <div class="seg" role="tablist" aria-label="Setup by client">
+                    <button type="button" role="tab" id="use-tab-curl" aria-controls="use-curl" aria-selected="true">curl</button>
+                    <button type="button" role="tab" id="use-tab-code" aria-controls="use-code" aria-selected="false" tabindex="-1">Claude Code</button>
+                    <button type="button" role="tab" id="use-tab-cursor" aria-controls="use-cursor" aria-selected="false" tabindex="-1">Cursor</button>
+                    <button type="button" role="tab" id="use-tab-vscode" aria-controls="use-vscode" aria-selected="false" tabindex="-1">VS Code</button>
+                </div>
+                <div class="use-pane" role="tabpanel" id="use-curl" aria-labelledby="use-tab-curl">
+                    <p>Upload a file to your account. Title, tags, visibility and expiry are optional headers.</p>
+                    <div class="copyrow block">
+                        <pre class="snippet" data-template="curl --data-binary @build.log \
+  -H &quot;Authorization: Bearer {token}&quot; \
+  -H &quot;X-Paste-Title: build log&quot; \
+  -H &quot;X-Paste-Tags: build,armbian&quot; \
+  {origin}/log"></pre>
+                        <button type="button" class="btn small copy">Copy</button>
+                    </div>
+                </div>
+                <div class="use-pane" role="tabpanel" id="use-code" aria-labelledby="use-tab-code" hidden>
+                    <p>Run this once in a terminal:</p>
+                    <div class="copyrow block">
+                        <pre class="snippet" data-template="claude mcp add --transport http hastebin {origin}/mcp --header &quot;Authorization: Bearer {token}&quot;"></pre>
+                        <button type="button" class="btn small copy">Copy</button>
+                    </div>
+                </div>
+                <div class="use-pane" role="tabpanel" id="use-cursor" aria-labelledby="use-tab-cursor" hidden>
+                    <p>Add this to <b>~/.cursor/mcp.json</b>:</p>
+                    <div class="copyrow block">
+                        <pre class="snippet" data-template='{"mcpServers": {"hastebin": {"url": "{origin}/mcp", "headers": {"Authorization": "Bearer {token}"}}}}' data-json="true"></pre>
+                        <button type="button" class="btn small copy">Copy</button>
+                    </div>
+                </div>
+                <div class="use-pane" role="tabpanel" id="use-vscode" aria-labelledby="use-tab-vscode" hidden>
+                    <p>Add this to <b>.vscode/mcp.json</b>, or to your user MCP config:</p>
+                    <div class="copyrow block">
+                        <pre class="snippet" data-template='{"servers": {"hastebin": {"type": "http", "url": "{origin}/mcp", "headers": {"Authorization": "Bearer {token}"}}}}' data-json="true"></pre>
+                        <button type="button" class="btn small copy">Copy</button>
+                    </div>
+                </div>
+                <p class="hint use-hint">Replace <code>$HASTEBIN_TOKEN</code> with a token, or set it in your shell.</p>
+            </section>
+
+            <section class="card" aria-labelledby="list-title">
+                <h2 id="list-title">
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M2 3h12v1.6H2zm0 4.2h12v1.6H2zm0 4.2h12V13H2z"/>
+                    </svg>
+                    Your tokens
+                </h2>
+                <table class="tokens">
+                    <thead>
+                        <tr>
+                            <th scope="col">Name</th>
+                            <th scope="col">Token</th>
+                            <th scope="col">Created</th>
+                            <th scope="col">Last used</th>
+                            <th scope="col"><span class="sr-only">Actions</span></th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+                <p class="hint tokens-empty" hidden>No tokens yet.</p>
+            </section>
+        </section>
+
+        <!-- Account -->
+        <section id="tab-account" class="view" aria-labelledby="account-title" hidden>
+            <div class="toolbar">
+                <h1 id="account-title">Account</h1>
+            </div>
+            <div class="grid">
+                <article class="card">
+                    <h2>
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M8 1.5a3.2 3.2 0 1 1 0 6.4 3.2 3.2 0 0 1 0-6.4zM2 14c0-2.9 2.7-4.6 6-4.6s6 1.7 6 4.6v.8H2z"/>
+                        </svg>
+                        Profile
+                    </h2>
+                    <dl class="rows profile"></dl>
+                </article>
+                <article class="card">
+                    <h2>
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M2 13h12v1.5H2zm1-4h2.4v3H3zm3.8-4h2.4v7H6.8zm3.8-3H13v10h-2.4z"/>
+                        </svg>
+                        Usage
+                    </h2>
+                    <dl class="rows usage"></dl>
+                </article>
+                <article class="card">
+                    <h2>
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M8 3.5c3.4 0 6 2.6 7 4.5-1 1.9-3.6 4.5-7 4.5S2 9.9 1 8c1-1.9 3.6-4.5 7-4.5zm0 1.8a2.7 2.7 0 1 0 0 5.4 2.7 2.7 0 0 0 0-5.4z"/>
+                        </svg>
+                        New pastes
+                    </h2>
+                    <fieldset class="choice default-visibility">
+                        <legend>Who can open a new paste</legend>
+                        <label><input type="radio" name="default_visibility" value="link" />
+                            <span><b>Anyone with the link</b><small>Good for sharing logs.</small></span></label>
+                        <label><input type="radio" name="default_visibility" value="private" />
+                            <span><b>Only me</b><small>Upload with <code>X-Paste-Visibility: link</code> to share one.</small></span></label>
+                    </fieldset>
+                    <p class="status-line visibility-status" role="status" aria-live="polite"></p>
+                </article>
+                <article class="card">
+                    <h2>
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M6 2h7v12H6v-2h1.5v.5h4v-9h-4V4H6zM1.5 7.2h6.2L5.9 5.4 7 4.3 10.7 8 7 11.7l-1.1-1.1 1.8-1.8H1.5z"/>
+                        </svg>
+                        Sessions
+                    </h2>
+                    <p>Log out on every browser where you are logged in.</p>
+                    <label class="check"><input type="checkbox" class="revoke-tokens" /> Also revoke all API tokens</label>
+                    <div class="actions left">
+                        <button type="button" class="btn logout-all">Log out everywhere</button>
+                    </div>
+                </article>
+                <article class="card">
+                    <h2>
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M7.2 1.5h1.6v7.1l2.6-2.6 1.1 1.1L8 11.6 3.5 7.1l1.1-1.1 2.6 2.6zM2 12.5h1.6v1h8.8v-1H14V15H2z"/>
+                        </svg>
+                        Your data
+                    </h2>
+                    <p>Download the details of your account, tokens and pastes as JSON. Paste contents are not included; open them from the list.</p>
+                    <div class="actions left">
+                        <a class="btn export" href="/api/v1/account/export" download>Export metadata</a>
+                    </div>
+                </article>
+                <article class="card danger-zone">
+                    <h2>
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M8 1l7.5 13H.5zm-.9 5v4h1.8V6zm0 5.2V13h1.8v-1.8z"/>
+                        </svg>
+                        Delete account
+                    </h2>
+                    <p>Deletes your account, every paste, token and session at once. Links to your pastes stop working. This cannot be undone.</p>
+                    <form class="delete-account" autocomplete="off">
+                        <label class="field">
+                            <span>Type <b class="confirm-login"></b> to confirm</span>
+                            <input type="text" name="confirm" autocapitalize="off" spellcheck="false" />
+                        </label>
+                        <button type="submit" class="btn danger" disabled>Delete my account</button>
+                    </form>
+                </article>
+            </div>
         </section>
     </main>
+
+    <dialog class="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+        <form method="dialog">
+            <h2 id="confirm-title"></h2>
+            <p id="confirm-text"></p>
+            <div class="actions right">
+                <button type="submit" value="cancel" class="btn ghost">Cancel</button>
+                <button type="submit" value="ok" class="btn danger confirm-ok"></button>
+            </div>
+        </form>
+    </dialog>
+
+    <div class="toast" role="status" aria-live="polite" hidden></div>
+
+    <template id="tpl-row">
+        <tr>
+            <td class="c-check"><input type="checkbox" class="pick" /></td>
+            <td class="c-title">
+                <a class="title"></a>
+                <div class="sub"><code class="key"></code><span class="tags"></span></div>
+            </td>
+            <td class="c-lang"></td>
+            <td class="c-vis">
+                <span class="vis vis-link">
+                    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M6.6 9.4l2.8-2.8 1 1-2.8 2.8zM9 3.7l1.3-1.3a3 3 0 0 1 4.3 4.3L13.3 8l-1-1 1.3-1.3a1.6 1.6 0 0 0-2.3-2.3L10 4.7zM7 12.3l-1.3 1.3a3 3 0 0 1-4.3-4.3L2.7 8l1 1-1.3 1.3a1.6 1.6 0 0 0 2.3 2.3L6 11.3z"/>
+                    </svg>
+                    link
+                </span>
+                <span class="vis vis-private">
+                    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M4.5 7V5a3.5 3.5 0 0 1 7 0v2H13v8H3V7zm1.6 0h3.8V5a1.9 1.9 0 0 0-3.8 0z"/>
+                    </svg>
+                    private
+                </span>
+            </td>
+            <td class="c-size num"></td>
+            <td class="c-views num"></td>
+            <td class="c-opened"></td>
+            <td class="c-created"></td>
+            <td class="c-meta"></td>
+            <td class="c-menu">
+                <details class="menu">
+                    <summary class="icon-btn">
+                        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+                            <circle cx="8" cy="3" r="1.5" fill="currentColor"/>
+                            <circle cx="8" cy="8" r="1.5" fill="currentColor"/>
+                            <circle cx="8" cy="13" r="1.5" fill="currentColor"/>
+                        </svg>
+                    </summary>
+                    <div class="menu-list">
+                        <a class="m-view">View</a>
+                        <a class="m-raw">Open raw</a>
+                        <a class="m-download">Download</a>
+                        <button type="button" class="m-copy">Copy link</button>
+                        <button type="button" class="m-delete">Delete</button>
+                    </div>
+                </details>
+            </td>
+        </tr>
+    </template>
+
+    <template id="tpl-token">
+        <tr>
+            <td class="t-name"></td>
+            <td class="t-prefix"><code></code></td>
+            <td class="t-created"></td>
+            <td class="t-used"></td>
+            <td class="t-actions"><button type="button" class="btn small danger-ghost revoke">Revoke</button></td>
+        </tr>
+    </template>
 </body>
 
 </html>

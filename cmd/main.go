@@ -86,6 +86,10 @@ func handleConfig(location string) (*config.Config, storage.Storage, keygenerato
 
 	cfg.MemoryBudget = setMemoryLimit(cfg.MemoryBudget, cgroupMemoryLimit("/"))
 	cfg.MaxLength = limitLoadedLength(pasteStorage, cfg.MaxLength, cfg.MemoryBudget)
+	// Registered pastes are held in memory the same way by those backends
+	if !handler.Streams(pasteStorage) {
+		cfg.RegisteredMaxLength = min(cfg.RegisteredMaxLength, int(handler.LoadedLengthCap(int64(cfg.MemoryBudget))))
+	}
 
 	return cfg, pasteStorage, keyGenerator
 }

@@ -118,6 +118,15 @@ type DocumentHandler struct {
 	// Quota caps the bytes one client may store per window. nil never refuses.
 	Quota *UploadQuota
 
+	// UserQuota is Quota for uploads owned by an account, counted per account
+	// instead of per client address. nil never refuses.
+	UserQuota *UploadQuota
+
+	// Uploaders tells who sends an upload to /documents and /log. nil means
+	// everyone is anonymous. It returns false when it refused the request and
+	// wrote the answer.
+	Uploaders func(w http.ResponseWriter, r *http.Request) (Uploader, bool)
+
 	// slots counts the large uploads in progress, in total and per client IP
 	slots     sync.Mutex
 	maxSlots  int
@@ -274,14 +283,42 @@ type Uploader struct {
 	// QuotaKey is what the stored bytes count against in the upload quota, "" for IP
 	QuotaKey string
 
-	// Owner is the account that owns the paste, 0 for none, and Pin keeps the
-	// paste past the expiration. Both are reserved for registered users and
-	// not used yet.
+	// Owner is the account that owns the paste, 0 for none. Its stored bytes
+	// count against UserQuota instead of Quota.
 	Owner int64
-	Pin   bool
+
+	// Pin keeps the paste past the expiration: pinned in a store that is a
+	// storage.Keeper, stored with skip_expiration in any other
+	Pin bool
 
 	// MaxLength is the largest paste accepted, 0 for the handler's MaxLength
 	MaxLength int
+
+	// Commit, when set, runs once the content is stored whole under a new
+	// key, with its size. When it fails the content is deleted again and the
+	// upload fails: an *UploadRefused is answered as it says, anything else
+	// with 500. Owned uploads record their row here.
+	Commit func(key string, size int64) error
+}
+
+// UploadRefused is an upload refused for a reason the caller chose: the
+// status, the {"message"} text and extra headers of the answer
+type UploadRefused struct {
+	Status  int
+	Message string
+	Header  map[string]string
+}
+
+func (e *UploadRefused) Error() string { return e.Message }
+
+// Write answers the refused upload
+func (e *UploadRefused) Write(w http.ResponseWriter) {
+	for name, value := range e.Header {
+		w.Header().Set(name, value)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(e.Status)
+	json.NewEncoder(w).Encode(map[string]string{"message": e.Message})
 }
 
 // AnonymousUploader is the Uploader of a request sent without an account
@@ -295,6 +332,15 @@ func (u Uploader) quotaKey() string {
 		return u.QuotaKey
 	}
 	return u.IP
+}
+
+// quota is the upload quota u counts against: UserQuota for an owned
+// upload, Quota otherwise
+func (h *DocumentHandler) quota(u Uploader) *UploadQuota {
+	if u.Owner != 0 {
+		return h.UserQuota
+	}
+	return h.Quota
 }
 
 // maxLength is the largest paste u may store, 0 for no limit
@@ -320,21 +366,21 @@ func (h *DocumentHandler) storeContent(u Uploader, key, content string) (string,
 	if err := h.CheckSpace(size); err != nil {
 		return "", err
 	}
-	quota := u.quotaKey()
-	if left, ok := h.Quota.Charge(quota, size); !ok {
+	quota, q := u.quotaKey(), h.quota(u)
+	if left, ok := q.Charge(quota, size); !ok {
 		return "", &QuotaError{RetryAfter: left}
 	}
 
 	if key == "" {
 		var err error
 		if key, err = h.freeKey(); err != nil {
-			h.Quota.Refund(quota, size)
+			q.Refund(quota, size)
 			return "", fmt.Errorf("generating document key: %w", err)
 		}
 	}
 
-	if err := h.Store.Set(key, content, false); err != nil {
-		h.Quota.Refund(quota, size)
+	if err := h.Store.Set(key, content, u.Pin); err != nil {
+		q.Refund(quota, size)
 		return "", fmt.Errorf("saving document: %w", err)
 	}
 
@@ -703,6 +749,7 @@ func (h *DocumentHandler) HandleRawGet(w http.ResponseWriter, r *http.Request) {
 
 	log.Debug().Str("key", key).Msg("Retrieved raw document")
 	w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
+	setDownload(w, r, key)
 	io.Copy(w, doc)
 }
 
@@ -740,7 +787,48 @@ func (h *DocumentHandler) serveRawFile(w http.ResponseWriter, r *http.Request, o
 	}
 	log.Debug().Str("key", key).Int64("size", size).Msg("Retrieved raw document")
 	w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
+	setDownload(w, r, key)
 	http.ServeContent(w, r, "", modTime, file)
+}
+
+// setDownload makes the answer of /raw/<key>.<ext>?download=1 a file to
+// save, named <key>.<ext>, or <key>.txt without a usable extension
+func setDownload(w http.ResponseWriter, r *http.Request, key string) {
+	if r.URL.Query().Get("download") != "1" {
+		return
+	}
+	ext := "txt"
+	if _, given, ok := strings.Cut(chi.URLParam(r, "id"), "."); ok && safeExtension(given) {
+		ext = strings.ToLower(given)
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="`+safeFileName(key)+"."+ext+`"`)
+}
+
+// safeExtension reports whether ext is 1 to 10 letters and digits
+func safeExtension(ext string) bool {
+	if ext == "" || len(ext) > 10 {
+		return false
+	}
+	for _, c := range ext {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// safeFileName keeps the letters, digits, - and _ of a key, "paste" when none
+func safeFileName(key string) string {
+	name := strings.Map(func(c rune) rune {
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' {
+			return c
+		}
+		return -1
+	}, key)
+	if name == "" {
+		return "paste"
+	}
+	return name
 }
 
 // pasteSize returns the size of a paste; an empty paste counts as missing
@@ -774,9 +862,22 @@ func (h *DocumentHandler) writeReadError(w http.ResponseWriter, ip, key string, 
 	}
 }
 
+// uploader tells who sends an upload, see Uploaders. It returns false when
+// the request was refused and answered.
+func (h *DocumentHandler) uploader(w http.ResponseWriter, r *http.Request) (Uploader, bool) {
+	if h.Uploaders == nil {
+		return AnonymousUploader(r), true
+	}
+	return h.Uploaders(w, r)
+}
+
 // Handle adding a new document (POST)
 func (h *DocumentHandler) HandlePost(w http.ResponseWriter, r *http.Request) {
-	key, ok := h.ReceiveInto(w, r, AnonymousUploader(r), "")
+	u, ok := h.uploader(w, r)
+	if !ok {
+		return
+	}
+	key, ok := h.ReceiveInto(w, r, u, "")
 	if !ok {
 		return
 	}
@@ -789,7 +890,11 @@ func (h *DocumentHandler) HandlePost(w http.ResponseWriter, r *http.Request) {
 
 // Handle PUT request that returns a direct link
 func (h *DocumentHandler) HandlePutLog(w http.ResponseWriter, r *http.Request) {
-	key, ok := h.ReceiveInto(w, r, AnonymousUploader(r), "")
+	u, ok := h.uploader(w, r)
+	if !ok {
+		return
+	}
+	key, ok := h.ReceiveInto(w, r, u, "")
 	if !ok {
 		return
 	}
@@ -803,11 +908,11 @@ func (h *DocumentHandler) HandlePutLog(w http.ResponseWriter, r *http.Request) {
 // key, or under a new free key when key is "". A paste already under key is
 // replaced only once the new one is stored whole. Every upload limit applies:
 // the quota, max length, free space floor, upload slots, slow upload guard and
-// memory budget. It returns the key; on failure it writes the error response
-// and returns false.
+// memory budget. Then u.Commit runs, when set, for a paste under a new key.
+// It returns the key; on failure it writes the error response and returns false.
 func (h *DocumentHandler) ReceiveInto(w http.ResponseWriter, r *http.Request, u Uploader, key string) (string, bool) {
 	ip := u.IP
-	if left, over := h.Quota.Exceeded(u.quotaKey()); over {
+	if left, over := h.quota(u).Exceeded(u.quotaKey()); over {
 		writeQuota(w, left)
 		return "", false
 	}
@@ -842,14 +947,26 @@ func (h *DocumentHandler) ReceiveInto(w http.ResponseWriter, r *http.Request, u 
 	}
 	defer guard.Stop()
 
-	key, err := h.receive(w, r, u, key, upload)
+	newKey := key == ""
+	key, size, err := h.receive(w, r, u, key, upload)
+	if err == nil && u.Commit != nil && newKey {
+		if err = u.Commit(key, size); err != nil {
+			h.discard(u, key, size)
+			if !errors.As(err, new(*UploadRefused)) {
+				err = &saveError{err}
+			}
+		}
+	}
 	if err == nil {
 		return key, true
 	}
 
 	var maxBytesErr *http.MaxBytesError
 	var quotaErr *QuotaError
+	var refused *UploadRefused
 	switch {
+	case errors.As(err, &refused):
+		refused.Write(w)
 	case guard.TooSlow() || errors.Is(err, ErrTooSlow):
 		log.Info().Msg("Upload dropped, the body arrived too slowly")
 		http.Error(w, `{"message": "Upload too slow, try again on a faster connection."}`, http.StatusRequestTimeout)
@@ -877,6 +994,22 @@ func (h *DocumentHandler) ReceiveInto(w http.ResponseWriter, r *http.Request, u 
 		http.Error(w, `{"message": "Error reading request body."}`, http.StatusBadRequest)
 	}
 	return "", false
+}
+
+// discard deletes a paste stored for u whose commit failed, and gives back
+// its quota. A pinned paste is let go too.
+func (h *DocumentHandler) discard(u Uploader, key string, size int64) {
+	if deleter, ok := h.Store.(storage.Deleter); ok {
+		if err := deleter.Delete(key); err != nil {
+			log.Error().Err(err).Msg("Failed to delete an upload that was not committed")
+		}
+	} else {
+		log.Warn().Msg("An upload that was not committed stays in the store: it cannot delete")
+	}
+	if keeper, ok := h.Store.(storage.Keeper); ok && u.Pin {
+		keeper.Keep(key, false)
+	}
+	h.quota(u).Refund(u.quotaKey(), size)
 }
 
 // writeTooLarge answers 413 to an upload over max_length
@@ -918,7 +1051,8 @@ func (e *saveError) Unwrap() error { return e.err }
 // of u, and stores it under key, or a new free key when key is "". A backend
 // that can stream gets the paste as it arrives, through a fixed buffer; any
 // other backend gets it whole, after it is held in memory and charged as it arrives.
-func (h *DocumentHandler) receive(w http.ResponseWriter, r *http.Request, u Uploader, key string, upload *Upload) (string, error) {
+// It returns the key and the size of the paste.
+func (h *DocumentHandler) receive(w http.ResponseWriter, r *http.Request, u Uploader, key string, upload *Upload) (string, int64, error) {
 	isMultipart := isMultipart(r)
 	maxLength := h.maxLength(u)
 	if limit := bodyLimit(r, maxLength); limit > 0 {
@@ -927,40 +1061,53 @@ func (h *DocumentHandler) receive(w http.ResponseWriter, r *http.Request, u Uplo
 
 	if writer, ok := h.Store.(storage.Writer); ok {
 		if !upload.Hold(StreamUploadMemory) {
-			return "", ErrMemoryBusy
+			return "", 0, ErrMemoryBusy
 		}
 		return h.receiveStream(r, u, key, writer, isMultipart, maxLength)
 	}
 
 	var buffer strings.Builder
 	if _, err := copyContent(r, isMultipart, maxLength, &chargedWriter{Writer: &buffer, u: upload}); err != nil {
-		return "", err
+		return "", 0, err
 	}
 	key, err := h.storeContent(u, key, buffer.String())
 	if err != nil {
-		return "", &saveError{err}
+		return "", 0, &saveError{err}
 	}
-	return key, nil
+	return key, int64(buffer.Len()), nil
 }
 
 // receiveStream writes the paste to the store as it arrives and stores it
 // under key, or a new free key when key is "", once it is complete. Each piece
 // counts against the uploader's quota and the free space floor as it is
 // written; nothing is left behind on failure.
-func (h *DocumentHandler) receiveStream(r *http.Request, u Uploader, key string, writer storage.Writer, isMultipart bool, maxLength int) (string, error) {
-	if key == "" {
+func (h *DocumentHandler) receiveStream(r *http.Request, u Uploader, key string, writer storage.Writer, isMultipart bool, maxLength int) (string, int64, error) {
+	fresh := key == ""
+	if fresh {
 		var err error
 		if key, err = h.freeKey(); err != nil {
-			return "", &saveError{fmt.Errorf("generating document key: %w", err)}
+			return "", 0, &saveError{fmt.Errorf("generating document key: %w", err)}
 		}
+	}
+	// A new pinned paste is pinned before it exists, so it never looks
+	// expired; a failure lets the pin go again
+	keeper, _ := h.Store.(storage.Keeper)
+	if !fresh {
+		keeper = nil
+	}
+	if u.Pin && keeper != nil {
+		keeper.Keep(key, true)
 	}
 	paste, err := writer.Create(key)
 	if err != nil {
-		return "", &saveError{err}
+		if u.Pin && keeper != nil {
+			keeper.Keep(key, false)
+		}
+		return "", 0, &saveError{err}
 	}
 
-	quota := u.quotaKey()
-	dst := &quotaWriter{Writer: paste, q: h.Quota, client: quota}
+	quota, q := u.quotaKey(), h.quota(u)
+	dst := &quotaWriter{Writer: paste, q: q, client: quota}
 	n, err := copyContent(r, isMultipart, maxLength, dst)
 	if err == nil && n == 0 {
 		err = ErrEmpty
@@ -972,12 +1119,15 @@ func (h *DocumentHandler) receiveStream(r *http.Request, u Uploader, key string,
 	}
 	if err != nil {
 		paste.Abort()
-		h.Quota.Refund(quota, dst.charged)
-		return "", err
+		if u.Pin && keeper != nil {
+			keeper.Keep(key, false)
+		}
+		q.Refund(quota, dst.charged)
+		return "", 0, err
 	}
 
 	pasteCreated.Inc()
-	return key, nil
+	return key, n, nil
 }
 
 // copyContent copies the paste out of the request body to dst: the body

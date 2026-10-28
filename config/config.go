@@ -208,6 +208,22 @@ type Config struct {
 	// to register. Admins are exempt. -1 turns the check off.
 	RegisterMinAccountAge int `yaml:"register_min_account_age"`
 
+	// RegisteredMaxLength is the largest paste a registered user may upload.
+	// 0 means twice MaxLength. Backends other than "file" cap it like MaxLength.
+	RegisteredMaxLength int `yaml:"registered_max_length"`
+
+	// RegisteredUploadQuota is how many bytes one registered user may upload
+	// per hour, counted per account instead of per address. -1 turns it off.
+	RegisteredUploadQuota int `yaml:"registered_upload_quota"`
+
+	// UserStorageLimit is how many bytes the pastes of one user may take,
+	// and UserMaxPastes how many pastes one user may keep. -1 means no limit.
+	UserStorageLimit int64 `yaml:"user_storage_limit"`
+	UserMaxPastes    int   `yaml:"user_max_pastes"`
+
+	// MaxTokensPerUser is how many API tokens one user may have
+	MaxTokensPerUser int `yaml:"max_tokens_per_user"`
+
 	// Storage is the storage backend to use
 	// Available storage backends are: "redis", "file", "memcached", "mongodb", "s3", "postgres"
 	Storage StorageConfig `yaml:"storage"`
@@ -245,6 +261,10 @@ var DefaultConfig = &Config{
 	SessionIdle:             7 * 24 * 3600,
 	AdminReauth:             12 * 3600,
 	RegisterMinAccountAge:   7 * 24 * 3600,
+	RegisteredUploadQuota:   1 << 30,
+	UserStorageLimit:        5 << 30,
+	UserMaxPastes:           10000,
+	MaxTokensPerUser:        20,
 	Storage: StorageConfig{
 		Type:     "file",
 		FilePath: "data",
@@ -522,14 +542,26 @@ func NewConfig(configFile string) *Config {
 		{"SESSION_IDLE", &cfg.SessionIdle},
 		{"ADMIN_REAUTH", &cfg.AdminReauth},
 		{"REGISTER_MIN_ACCOUNT_AGE", &cfg.RegisterMinAccountAge},
+		{"REGISTERED_MAX_LENGTH", &cfg.RegisteredMaxLength},
+		{"REGISTERED_UPLOAD_QUOTA", &cfg.RegisteredUploadQuota},
+		{"USER_MAX_PASTES", &cfg.UserMaxPastes},
+		{"MAX_TOKENS_PER_USER", &cfg.MaxTokensPerUser},
 	} {
 		if value := os.Getenv(setting.env); value != "" {
 			valueInt, err := strconv.Atoi(value)
 			if err != nil {
-				log.Fatal().Str("value", value).Msgf("Failed to parse %s environment variable: expected seconds", setting.env)
+				log.Fatal().Str("value", value).Msgf("Failed to parse %s environment variable: expected a whole number", setting.env)
 			}
 			*setting.target = valueInt
 		}
+	}
+
+	if limit := os.Getenv("USER_STORAGE_LIMIT"); limit != "" {
+		limitInt, err := strconv.ParseInt(limit, 10, 64)
+		if err != nil {
+			log.Fatal().Str("value", limit).Msg("Failed to parse USER_STORAGE_LIMIT environment variable: expected bytes")
+		}
+		cfg.UserStorageLimit = limitInt
 	}
 
 	if adminIDs := os.Getenv("ADMIN_GITHUB_IDS"); adminIDs != "" {
@@ -740,6 +772,40 @@ func NewConfig(configFile string) *Config {
 		log.Fatal().Int("register_min_account_age", cfg.RegisterMinAccountAge).Msg("register_min_account_age must be seconds, 0 for the default or -1 for no check")
 	}
 
+	if cfg.RegisteredMaxLength == 0 {
+		cfg.RegisteredMaxLength = 2 * cfg.MaxLength
+	}
+	if cfg.RegisteredMaxLength < 0 {
+		log.Fatal().Int("registered_max_length", cfg.RegisteredMaxLength).Msg("registered_max_length must be 1 or more bytes (0 means twice max_length)")
+	}
+	if cfg.RegisteredUploadQuota == 0 {
+		cfg.RegisteredUploadQuota = DefaultConfig.RegisteredUploadQuota
+	}
+	if cfg.UserStorageLimit == 0 {
+		cfg.UserStorageLimit = DefaultConfig.UserStorageLimit
+	}
+	if cfg.UserMaxPastes == 0 {
+		cfg.UserMaxPastes = DefaultConfig.UserMaxPastes
+	}
+	for _, setting := range []struct {
+		name  string
+		value int64
+	}{
+		{"registered_upload_quota", int64(cfg.RegisteredUploadQuota)},
+		{"user_storage_limit", cfg.UserStorageLimit},
+		{"user_max_pastes", int64(cfg.UserMaxPastes)},
+	} {
+		if setting.value < -1 {
+			log.Fatal().Int64(setting.name, setting.value).Msgf("%s must be 1 or more, 0 for the default or -1 for no limit", setting.name)
+		}
+	}
+	if cfg.MaxTokensPerUser == 0 {
+		cfg.MaxTokensPerUser = DefaultConfig.MaxTokensPerUser
+	}
+	if cfg.MaxTokensPerUser < 1 || cfg.MaxTokensPerUser > 1000 {
+		log.Fatal().Int("max_tokens_per_user", cfg.MaxTokensPerUser).Msg("max_tokens_per_user must be 1 to 1000 (0 means the default 20)")
+	}
+
 	for _, id := range cfg.AdminGitHubIDs {
 		if id <= 0 {
 			log.Fatal().Int64("admin_github_ids", id).Msg("admin_github_ids must hold numeric GitHub ids, 1 or more")
@@ -842,5 +908,10 @@ func (c *Config) Effective() []Setting {
 		{"admin_github_ids", c.AdminGitHubIDs},
 		{"admin_reauth", c.AdminReauth},
 		{"register_min_account_age", c.RegisterMinAccountAge},
+		{"registered_max_length", c.RegisteredMaxLength},
+		{"registered_upload_quota", c.RegisteredUploadQuota},
+		{"user_storage_limit", c.UserStorageLimit},
+		{"user_max_pastes", c.UserMaxPastes},
+		{"max_tokens_per_user", c.MaxTokensPerUser},
 	}
 }

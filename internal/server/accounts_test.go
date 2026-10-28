@@ -117,7 +117,7 @@ func TestAccountsRoutes(t *testing.T) {
 	// The dashboard page is served, its private file name is not
 	rec = serve(srv, http.MethodGet, "/dashboard", nil)
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.Contains(t, rec.Body.String(), "Dashboard coming in the next milestone")
+	require.Contains(t, rec.Body.String(), `id="tab-pastes"`)
 	require.Equal(t, http.StatusNotFound, serve(srv, http.MethodGet, "/dashboard.html", nil).Code)
 
 	// Session API

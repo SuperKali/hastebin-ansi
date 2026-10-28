@@ -21,6 +21,7 @@ import (
 	"github.com/armbian/ansi-hastebin/internal/accounts"
 	"github.com/armbian/ansi-hastebin/internal/admin"
 	"github.com/armbian/ansi-hastebin/internal/auth"
+	"github.com/armbian/ansi-hastebin/internal/dashboard"
 	"github.com/armbian/ansi-hastebin/internal/keygenerator"
 	"github.com/armbian/ansi-hastebin/internal/mcpserver"
 	"github.com/armbian/ansi-hastebin/internal/storage"
@@ -59,6 +60,9 @@ type Server struct {
 
 	// auth logs users in, nil when accounts are off
 	auth *auth.Service
+
+	// drainer deletes the content of deleted registered pastes, nil when accounts are off
+	drainer *accounts.Drainer
 
 	// stopAccounts stops the session sweeper
 	stopAccounts context.CancelFunc
@@ -139,7 +143,10 @@ func (s *Server) newAuth(mcpMaxLength int) *auth.Service {
 		AdminIDs:      s.config.AdminGitHubIDs,
 		MinAccountAge: time.Duration(s.config.RegisterMinAccountAge) * time.Second,
 		ClientKey:     func(r *http.Request) string { return handler.ClientKey(handler.ClientIP(r)) },
-		Limits: func(*auth.Principal) any {
+		Limits: func(p *auth.Principal) any {
+			if p != nil {
+				return map[string]int{"max_length": s.config.RegisteredMaxLength, "mcp_max_length": mcpMaxLength}
+			}
 			return map[string]int{"max_length": s.config.MaxLength, "mcp_max_length": mcpMaxLength}
 		},
 	})
@@ -220,6 +227,22 @@ func (s *Server) RegisterRoutes() {
 	if s.Accounts != nil {
 		s.auth = s.newAuth(mcpMaxLength)
 		s.auth.RegisterRoutes(s.mux)
+		s.pinRegistered()
+		s.drainer = accounts.NewDrainer(s.Accounts, s.deleteStored)
+		documentHandler.UserQuota = handler.NewUploadQuota(int64(s.config.RegisteredUploadQuota), handler.DefaultQuotaWindow)
+		dash := dashboard.New(s.auth, s.Accounts, dashboard.Limits{
+			MaxPastes:   int64(s.config.UserMaxPastes),
+			MaxBytes:    s.config.UserStorageLimit,
+			MaxLength:   s.config.RegisteredMaxLength,
+			UploadQuota: int64(s.config.RegisteredUploadQuota),
+			MaxTokens:   s.config.MaxTokensPerUser,
+		}, s.drainer)
+		documentHandler.Uploaders = dash.Uploaders
+		dash.RegisterRoutes(s.mux)
+		log.Info().Int("registered_max_length", s.config.RegisteredMaxLength).
+			Int("registered_upload_quota", s.config.RegisteredUploadQuota).
+			Int64("user_storage_limit", s.config.UserStorageLimit).Int("user_max_pastes", s.config.UserMaxPastes).
+			Int("max_tokens_per_user", s.config.MaxTokensPerUser).Msg("Registered user limits configured")
 		files, _ := s.storage.(*storage.FileStorage)
 		(&admin.Handler{
 			Auth:        s.auth,
@@ -295,6 +318,34 @@ func (s *Server) RegisterRoutes() {
 	s.mux.Head("/*", serveWeb)
 }
 
+// pinRegistered pins the content of every registered paste and revision in
+// a store that expires pastes on its own clock, so they never expire. Pins
+// live in memory, so this runs at every start.
+func (s *Server) pinRegistered() {
+	keeper, ok := s.storage.(storage.Keeper)
+	if !ok {
+		return
+	}
+	n := 0
+	err := s.Accounts.EachStoreKey(context.Background(), func(key string) {
+		keeper.Keep(key, true)
+		n++
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to read the registered pastes to keep them from expiring")
+	}
+	log.Info().Int("pinned", n).Msg("Registered pastes pinned, they never expire")
+}
+
+// deleteStored deletes one stored paste for the delete queue
+func (s *Server) deleteStored(key string) error {
+	deleter, ok := s.storage.(storage.Deleter)
+	if !ok {
+		return fmt.Errorf("storage %s cannot delete pastes", s.config.Storage.Type)
+	}
+	return deleter.Delete(key)
+}
+
 // privatePages are embedded pages served only on their own routes, behind
 // their checks: /admin for admins, /dashboard when accounts are on
 var privatePages = map[string]bool{"admin.html": true, "admin.js": true, "dashboard.html": true}
@@ -353,6 +404,7 @@ func (s *Server) Start() {
 		ctx, cancel := context.WithCancel(context.Background())
 		s.stopAccounts = cancel
 		go s.auth.Run(ctx)
+		go s.drainer.Run(ctx)
 	}
 
 	log.Info().Str("version", s.Version).Str("host", s.config.Host).Int("port", s.config.Port).Msg("Starting server")
@@ -364,6 +416,11 @@ func (s *Server) Start() {
 
 func (s *Server) Shutdown(ctx context.Context) {
 	log.Info().Msg("Gracefully shutting down server")
+
+	// The delete queue and session sweeper stop before the store closes
+	if s.stopAccounts != nil {
+		s.stopAccounts()
+	}
 
 	if err := s.storage.Close(); err != nil {
 		log.Error().Err(err).Msg("Failed to close storage")
@@ -379,9 +436,6 @@ func (s *Server) Shutdown(ctx context.Context) {
 		}
 	}
 
-	if s.stopAccounts != nil {
-		s.stopAccounts()
-	}
 	if s.Accounts != nil {
 		if err := s.Accounts.Close(); err != nil {
 			log.Error().Err(err).Msg("Failed to close the accounts database")
@@ -587,14 +641,16 @@ type redactingFormatter struct {
 func (f *redactingFormatter) NewLogEntry(r *http.Request) middleware.LogEntry {
 	path := redactPath(r.URL.Path)
 	// The query of a login route holds the OAuth code and state, or a
-	// return path that may be a paste link: it is never logged
-	login := strings.HasPrefix(r.URL.Path, "/auth/")
-	if path == r.URL.Path && !login {
+	// return path that may be a paste link; a dashboard search may hold a
+	// key; and a token sent by mistake in a query must not reach the log
+	hideQuery := strings.HasPrefix(r.URL.Path, "/auth/") || strings.HasPrefix(r.URL.Path, "/api/v1/") ||
+		strings.Contains(r.URL.RawQuery, "hbp_")
+	if path == r.URL.Path && !hideQuery {
 		return f.next.NewLogEntry(r)
 	}
 	logged := *r
 	logged.RequestURI = path
-	if r.URL.RawQuery != "" && !login {
+	if r.URL.RawQuery != "" && !hideQuery {
 		logged.RequestURI += "?" + r.URL.RawQuery
 	}
 	return f.next.NewLogEntry(&logged)

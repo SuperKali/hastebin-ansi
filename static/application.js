@@ -99,8 +99,10 @@ haste_document.prototype.save = function (data, callback) {
     }
     this.data = data;
     var _this = this;
+    // Logged in, the CSRF token makes the paste yours; without it the paste is anonymous
+    var headers = haste_document.csrf ? {'X-CSRF-Token': haste_document.csrf} : {};
     $.ajax('/documents', {
-        type: 'post', data: data, dataType: 'json', contentType: 'text/plain; charset=utf-8', success: function (res) {
+        type: 'post', data: data, dataType: 'json', contentType: 'text/plain; charset=utf-8', headers: headers, success: function (res) {
             _this.locked = true;
             _this.key = res.key;
             // Guessing the language of a large paste would freeze the browser
@@ -502,6 +504,7 @@ haste.prototype.loadSession = function () {
     $.ajax('/api/v1/session', {
         type: 'get', dataType: 'json', success: function (session) {
             _this.user = session && session.user ? session.user : null;
+            haste_document.csrf = _this.user && session.csrf ? session.csrf : null;
             _this.showAccount();
         }, error: function () {
             _this.user = null;

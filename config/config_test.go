@@ -355,6 +355,10 @@ func TestNewConfig_InvalidValuesAreFatal(t *testing.T) {
 		{"SESSION_IDLE", "7d", "Failed to parse SESSION_IDLE"},
 		{"ADMIN_GITHUB_IDS", "octocat", "Failed to parse ADMIN_GITHUB_IDS"},
 		{"REGISTER_MIN_ACCOUNT_AGE", "-2", "register_min_account_age must be seconds"},
+		{"REGISTERED_MAX_LENGTH", "-1", "registered_max_length must be 1 or more bytes"},
+		{"USER_STORAGE_LIMIT", "5GiB", "Failed to parse USER_STORAGE_LIMIT"},
+		{"USER_MAX_PASTES", "-2", "user_max_pastes must be 1 or more"},
+		{"MAX_TOKENS_PER_USER", "1001", "max_tokens_per_user must be 1 to 1000"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.env, func(t *testing.T) {
@@ -406,6 +410,37 @@ func TestNewConfig_Accounts(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("admin_github_ids: [7, 9]\n"), 0o600))
 	t.Setenv("ADMIN_GITHUB_IDS", "")
 	require.Equal(t, []int64{7, 9}, NewConfig(path).AdminGitHubIDs)
+}
+
+func TestNewConfig_RegisteredLimits(t *testing.T) {
+	cfg := NewConfig("nonexistent.yaml")
+	require.Equal(t, 2*cfg.MaxLength, cfg.RegisteredMaxLength)
+	require.Equal(t, 1<<30, cfg.RegisteredUploadQuota)
+	require.EqualValues(t, 5<<30, cfg.UserStorageLimit)
+	require.Equal(t, 10000, cfg.UserMaxPastes)
+	require.Equal(t, 20, cfg.MaxTokensPerUser)
+
+	t.Setenv("MAX_LENGTH", "1000")
+	require.Equal(t, 2000, NewConfig("nonexistent.yaml").RegisteredMaxLength)
+
+	t.Setenv("REGISTERED_MAX_LENGTH", "123456")
+	t.Setenv("REGISTERED_UPLOAD_QUOTA", "-1")
+	t.Setenv("USER_STORAGE_LIMIT", "10737418240")
+	t.Setenv("USER_MAX_PASTES", "-1")
+	t.Setenv("MAX_TOKENS_PER_USER", "5")
+	cfg = NewConfig("nonexistent.yaml")
+	require.Equal(t, 123456, cfg.RegisteredMaxLength)
+	require.Equal(t, -1, cfg.RegisteredUploadQuota)
+	require.EqualValues(t, 10<<30, cfg.UserStorageLimit)
+	require.Equal(t, -1, cfg.UserMaxPastes)
+	require.Equal(t, 5, cfg.MaxTokensPerUser)
+
+	values := map[string]any{}
+	for _, s := range cfg.Effective() {
+		values[s.Key] = s.Value
+	}
+	require.Equal(t, 123456, values["registered_max_length"])
+	require.Equal(t, 5, values["max_tokens_per_user"])
 }
 
 func TestParseGitHubIDs(t *testing.T) {

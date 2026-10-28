@@ -255,6 +255,11 @@ Settings come from `config.yaml` (or the file given with `--config`). An environ
 | `admin_github_ids` | `ADMIN_GITHUB_IDS` | empty | Numeric GitHub ids of the admins. A list in the file, comma separated in the env var |
 | `admin_reauth` | `ADMIN_REAUTH` | `43200` | Seconds after a login an admin may still take destructive actions without logging in again |
 | `register_min_account_age` | `REGISTER_MIN_ACCOUNT_AGE` | `604800` | Seconds a GitHub account must exist before it can register. Admins are exempt. `-1` turns the check off |
+| `registered_max_length` | `REGISTERED_MAX_LENGTH` | twice `max_length` | Largest paste a logged in user may upload, in bytes. Storage other than `file` caps it at 8 MiB, like `max_length` |
+| `registered_upload_quota` | `REGISTERED_UPLOAD_QUOTA` | `1073741824` | Bytes one logged in user may upload per hour (1 GiB). It counts per account and replaces the per address quota for their uploads. `-1` turns it off |
+| `user_storage_limit` | `USER_STORAGE_LIMIT` | `5368709120` | Bytes the pastes of one user may take in all (5 GiB). `-1` means no limit |
+| `user_max_pastes` | `USER_MAX_PASTES` | `10000` | Pastes one user may keep. `-1` means no limit |
+| `max_tokens_per_user` | `MAX_TOKENS_PER_USER` | `20` | API tokens one user may have, 1 to 1000 |
 
 **expiration.** Seconds, 0 or more. Each view starts the lifetime again, so a paste goes away after that many seconds without being read. The `redis`, `memcached`, `mongodb` and `postgres` backends hand it to the database. The `file` backend checks the file's modification time: a read refreshes it, an older file is no longer served, and every 10 minutes a janitor deletes those files. **Turning `EXPIRATION` on with `file` storage deletes the pastes you already have that are older than that age**, so back up the data folder first if you want to keep them. The `s3` backend ignores it: use a bucket lifecycle rule. Pages from `documents` never expire.
 
@@ -326,7 +331,7 @@ The server sets `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-T
 
 ## Accounts (preview)
 
-GitHub login arrives in steps. This version has login, sessions and an admin status page; the dashboard for your own pastes comes next. Anonymous use does not change, and login stays off until `GITHUB_CLIENT_ID` is set. Do not turn it on for a public server yet.
+GitHub login arrives in steps. This version has login, sessions, the dashboard with your own pastes and API tokens, and an admin status page. Private pastes are stored as private but still open with their link until the next step. Anonymous use does not change, and login stays off until `GITHUB_CLIENT_ID` is set. Do not turn it on for a public server yet.
 
 To set it up:
 
@@ -347,6 +352,41 @@ hastebin --config config.yaml --backup-db /path/to/hastebin-backup.db
 ```
 
 It writes a consistent copy with SQLite `VACUUM INTO` and is safe while the server runs. The target file must not exist yet; it gets mode 0600. Copying `hastebin.db` while the server runs is not a backup, as the latest changes are still in `hastebin.db-wal`. In Docker or Pterodactyl, run it in the running container: `docker exec <container> hastebin --config config.yaml --backup-db data/hastebin-backup.db` (in the distroless image the binary is `/bin/hastebin` and the config `/app/config.yaml`).
+
+### Your pastes
+
+A paste saved on the web page while you are logged in, or uploaded with one of your API tokens, is yours. It never expires, even when `EXPIRATION` is set, and it counts against your own limits (`REGISTERED_MAX_LENGTH`, `REGISTERED_UPLOAD_QUOTA`, `USER_STORAGE_LIMIT`, `USER_MAX_PASTES`) instead of the anonymous ones. Pastes from before you logged in stay anonymous and cannot be claimed.
+
+The dashboard at `/dashboard` lists your pastes, 25 per page, with search on title, key and language, filters for visibility, language and tags, and sorting. From there you delete one paste or many at once. A deleted paste is gone from the list at once; its content is removed from the store right after. The Account tab shows your usage and limits, sets whether new pastes are shared by link or private, logs you out everywhere (and can revoke every token at the same time), exports the details of your pastes as JSON, and deletes the account with everything in it.
+
+The dashboard API under `/api/v1` needs a login session: every change also needs the `X-CSRF-Token` header from `GET /api/v1/session` and a JSON body. API tokens do not work there; they are for uploads and, later, MCP. Each user may make 120 reads and 30 changes a minute, create 10 tokens an hour and try to delete the account 3 times a day.
+
+### API tokens and curl
+
+Create a token on the Tokens tab of the dashboard. It looks like `hbp_` and 49 letters and digits, and it is shown once: the server keeps only its SHA-256 and the first characters, to tell your tokens apart. Send it in the `Authorization` header, never in the URL:
+
+```sh
+curl --data-binary @build.log \
+  -H "Authorization: Bearer $HASTEBIN_TOKEN" \
+  -H "X-Paste-Title: build log" \
+  -H "X-Paste-Tags: build,armbian" \
+  https://paste.example.com/log
+```
+
+The same works on `POST /documents`. These optional headers describe the paste:
+
+| Header | Value |
+|---|---|
+| `X-Paste-Title` | Up to 200 characters |
+| `X-Paste-Tags` | Up to 10 tags, comma separated. A tag is 1 to 32 lowercase letters, digits, `.`, `_` or `-`, starting with a letter or digit. Upper case is lowered, duplicates dropped |
+| `X-Paste-Visibility` | `link` or `private`. Without it, your default from the Account tab |
+| `X-Paste-Expires` | An RFC 3339 time in the future, such as `2030-01-02T15:04:05Z` |
+
+They count only on uploads with a token or a login; anonymous uploads ignore them. A value the server does not accept answers 400 and nothing is stored. Visibility and expiry are stored now and take effect in the next step.
+
+A token that is malformed, unknown or revoked answers 401 with `WWW-Authenticate: Bearer realm="hastebin", error="invalid_token"`; the upload never falls back to anonymous. A token revoked while an upload is still arriving stops it too: the content is deleted and the answer is 401. Over your limits an upload answers 413 (largest paste or storage full), 403 (too many pastes) or 429 (hourly quota). On the web page, a paste is yours only when the page sends the CSRF token along, which it does by itself when you are logged in; a plain cookie on `POST /documents` still makes an anonymous paste.
+
+To download a paste as a file, add `?download=1` to its `/raw` link: `/raw/<key>.log?download=1` saves `<key>.log`.
 
 For tests against a fake GitHub, `GITHUB_OAUTH_BASE` and `GITHUB_API_BASE` (`github_oauth_base`, `github_api_base`) replace `https://github.com` and `https://api.github.com`. They take https, or http only on `localhost` or `127.0.0.1`. Never set them on a real server.
 

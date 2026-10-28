@@ -100,6 +100,17 @@ base_url: ""
 # admin_github_ids: [583231]
 # admin_reauth: 43200
 # register_min_account_age: 604800
+# Limits of registered users. Their pastes never expire, even with expiration
+# set. registered_max_length is the largest paste (0 means twice max_length;
+# other storage than "file" caps it at 8 MiB). registered_upload_quota is
+# bytes per hour per account, counted instead of the per address quota.
+# user_storage_limit and user_max_pastes cap what one account keeps. -1
+# turns a limit off.
+# registered_max_length: 0
+# registered_upload_quota: 1073741824
+# user_storage_limit: 5368709120
+# user_max_pastes: 10000
+# max_tokens_per_user: 20
 
 storage:
   type: "file"

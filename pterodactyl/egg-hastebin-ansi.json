@@ -378,6 +378,56 @@
             "user_editable": true,
             "rules": "required|integer|min:-1",
             "field_type": "text"
+        },
+        {
+            "name": "Registered max length",
+            "description": "Largest paste a logged in user may upload, in bytes. 0 means twice MAX_LENGTH. Storage other than file caps it at 8 MiB.",
+            "env_variable": "REGISTERED_MAX_LENGTH",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:0,2147483647",
+            "field_type": "text"
+        },
+        {
+            "name": "Registered upload quota",
+            "description": "Bytes one logged in user may upload per hour, counted per account instead of per address. -1 turns it off.",
+            "env_variable": "REGISTERED_UPLOAD_QUOTA",
+            "default_value": "1073741824",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:-1",
+            "field_type": "text"
+        },
+        {
+            "name": "User storage limit",
+            "description": "Bytes the pastes of one user may take in all. -1 means no limit.",
+            "env_variable": "USER_STORAGE_LIMIT",
+            "default_value": "5368709120",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:-1",
+            "field_type": "text"
+        },
+        {
+            "name": "User max pastes",
+            "description": "How many pastes one user may keep. -1 means no limit.",
+            "env_variable": "USER_MAX_PASTES",
+            "default_value": "10000",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:-1",
+            "field_type": "text"
+        },
+        {
+            "name": "Max tokens per user",
+            "description": "How many API tokens one user may have.",
+            "env_variable": "MAX_TOKENS_PER_USER",
+            "default_value": "20",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1,1000",
+            "field_type": "text"
         }
     ]
 }

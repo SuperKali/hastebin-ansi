@@ -24,8 +24,11 @@ var ErrDisabled = errors.New("account disabled")
 type Principal struct {
 	User *accounts.User
 
-	// Session is the cookie session of the request
+	// Session is the cookie session of the request, nil for a token
 	Session *accounts.Session
+
+	// Token is the API token of the request, nil for a session
+	Token *accounts.Token
 
 	// Admin is set when the user's GitHub id is in the admin list
 	Admin bool
@@ -37,6 +40,16 @@ func (p *Principal) CSRF() string {
 		return ""
 	}
 	return encode(p.Session.CSRF)
+}
+
+// ValidCSRF reports whether token, in the X-CSRF-Token form, is the CSRF
+// token of the session, compared in constant time
+func (p *Principal) ValidCSRF(token string) bool {
+	if p == nil || p.Session == nil {
+		return false
+	}
+	b, ok := decodeSecret(token)
+	return ok && subtle.ConstantTimeCompare(b, p.Session.CSRF) == 1
 }
 
 type principalKey struct{}
@@ -167,12 +180,22 @@ func (s *Service) RequireCSRF(next http.Handler) http.Handler {
 			return
 		}
 		if msg := s.checkCSRF(r, FromContext(r.Context())); msg != "" {
-			log.Info().Str("path", r.URL.Path).Str("reason", msg).Msg("Request refused by the CSRF check")
+			// The route pattern, not the path, which may hold a paste key
+			log.Info().Str("route", routePattern(r)).Str("reason", msg).Msg("Request refused by the CSRF check")
 			WriteError(w, http.StatusForbidden, "csrf", msg)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// routePattern is the chi pattern of the route a request matched, such as
+// /api/v1/pastes/{key}, "" outside chi
+func routePattern(r *http.Request) string {
+	if rc := chi.RouteContext(r.Context()); rc != nil {
+		return rc.RoutePattern()
+	}
+	return ""
 }
 
 // checkCSRF returns why a state change is refused, "" when it may go on
@@ -189,8 +212,7 @@ func (s *Service) checkCSRF(r *http.Request, p *Principal) string {
 	if media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || media != "application/json" {
 		return "The body must be JSON."
 	}
-	token, ok := decodeSecret(r.Header.Get("X-CSRF-Token"))
-	if !ok || subtle.ConstantTimeCompare(token, p.Session.CSRF) != 1 {
+	if !p.ValidCSRF(r.Header.Get("X-CSRF-Token")) {
 		return "Missing or wrong CSRF token."
 	}
 	return ""

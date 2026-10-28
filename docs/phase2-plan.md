@@ -234,3 +234,8 @@ Registered pastes carry up to 10 tags, used to find "attachments" (logs referenc
 4. Dashboard search: title, key, language only (no content search).
 5. Edit history visible only to the owner; viewers see "edited at HH:MM".
 6. Abuse strikes: manual only, shown on the user row.
+
+## 14. Polish notes for M7 (from M2 screenshots)
+- Dashboard "Lang" column is always empty: infer language from the upload extension (/log?ext, X-Paste-Language, key.ext on save) and let PATCH set it.
+- Mobile (390 px) top tabs are icons only: add short labels or aria-visible text under icons; show the login somewhere on mobile.
+- Dates use the browser locale with seconds: show relative time for today, short date otherwise.
