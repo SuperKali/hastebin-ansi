@@ -19,11 +19,12 @@ max_length: 4000000
 # Bytes one client (an IPv4 address or an IPv6 /64) may upload per hour.
 # Over it uploads get 429. -1 turns the quota off.
 # upload_quota: 268435456
-# Paste lifetime in seconds, 0 means pastes never expire. Each read starts it
-# again. s3 storage ignores it. With file storage, a value above 0 deletes every
-# paste file not read or written for that long, existing pastes included.
-# A public server should set it (for example 2592000, 30 days) so the disk does
-# not fill up.
+# Lifetime of anonymous pastes in seconds, 0 means they never expire. Each read
+# starts it again. s3 storage ignores it. With file storage, a value above 0
+# deletes every anonymous paste file not read or written for that long, existing
+# ones included. Pastes of logged in users are never deleted this way. A public
+# server should set it (the Pterodactyl egg uses 31536000, 1 year) so the disk
+# does not fill up.
 expiration: 0
 key_generator: "phonetic"
 # Characters used by the "random" key generator

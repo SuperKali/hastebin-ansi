@@ -43,6 +43,7 @@ With the token:
 - No tool deletes or edits pastes.
 - A malformed, unknown, revoked or disabled token gets HTTP 401, never an anonymous answer.
 - Large files with curl, owned: curl -H "Authorization: Bearer hbp_..." -H "X-Paste-Visibility: private" -H "X-Paste-Tags: a,b" --data-binary @file <origin>/log
+- Read your own private paste: curl -H "Authorization: Bearer hbp_..." <origin>/raw/<key> (without the token it answers 404, like a missing paste)
 
 ## Without MCP
 

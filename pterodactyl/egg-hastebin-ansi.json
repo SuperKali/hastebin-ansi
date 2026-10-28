@@ -50,6 +50,86 @@
             "field_type": "text"
         },
         {
+            "name": "Storage host",
+            "description": "Host of the redis, memcached, mongodb or postgres server, or the S3 endpoint. Not used with file storage.",
+            "env_variable": "STORAGE_HOST",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Storage port",
+            "description": "Port of the storage server. Not used with file storage.",
+            "env_variable": "STORAGE_PORT",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|integer|between:1,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "Storage username",
+            "description": "User of the storage server. For s3 this is the access key.",
+            "env_variable": "STORAGE_USERNAME",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Storage password",
+            "description": "Password of the storage server. For s3 this is the secret key. Only panel admins can see or change it.",
+            "env_variable": "STORAGE_PASSWORD",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Storage database",
+            "description": "Database name for mongodb and postgres.",
+            "env_variable": "STORAGE_DATABASE",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Storage bucket",
+            "description": "S3 bucket name. Used only with s3 storage.",
+            "env_variable": "STORAGE_BUCKET",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Storage AWS region",
+            "description": "S3 region. Used only with s3 storage.",
+            "env_variable": "STORAGE_AWS_REGION",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Storage TLS",
+            "description": "Use https for the s3 endpoint. Used only with s3 storage.",
+            "env_variable": "STORAGE_TLS",
+            "default_value": "false",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:true,false",
+            "field_type": "text"
+        },
+        {
             "name": "Key Length",
             "description": "Length of the paste keys in the URL, at least 12, so keys cannot be guessed.",
             "env_variable": "KEY_LENGTH",
@@ -61,9 +141,9 @@
         },
         {
             "name": "Expiration",
-            "description": "Paste lifetime in seconds, 0 means pastes never expire. Each read starts it again. With file storage, a value above 0 deletes every paste file not read or written for that long, existing pastes included. S3 storage ignores it. On a public server set it, for example 2592000 (30 days), so the disk does not fill up.",
+            "description": "Seconds an anonymous paste lives after its last read or write. The default 31536000 is 1 year; 0 means never. With file storage the cleanup also deletes existing anonymous files older than this, so back up the data folder before you lower it. Pastes of logged in users never expire this way.",
             "env_variable": "EXPIRATION",
-            "default_value": "0",
+            "default_value": "31536000",
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|integer|min:0",
@@ -170,6 +250,16 @@
             "field_type": "text"
         },
         {
+            "name": "Key space",
+            "description": "Characters the random key generator picks from. Empty means a to z. Not used by the phonetic generator.",
+            "env_variable": "KEY_SPACE",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
             "name": "Logging Level",
             "description": "How much the server logs.",
             "env_variable": "LOGGING_LEVEL",
@@ -177,6 +267,16 @@
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|string|in:trace,debug,info,warn,error",
+            "field_type": "text"
+        },
+        {
+            "name": "Colored logs",
+            "description": "Color the log output. The panel console shows plain text better.",
+            "env_variable": "LOGGING_COLORIZE",
+            "default_value": "false",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:true,false",
             "field_type": "text"
         },
         {
@@ -423,6 +523,26 @@
             "name": "Max tokens per user",
             "description": "How many API tokens one user may have.",
             "env_variable": "MAX_TOKENS_PER_USER",
+            "default_value": "20",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1,1000",
+            "field_type": "text"
+        },
+        {
+            "name": "Edit window",
+            "description": "Seconds after saving in which a logged in user can still edit a paste under the same link, as long as nobody else has opened it. 0 turns same-link editing off.",
+            "env_variable": "EDIT_WINDOW",
+            "default_value": "600",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:0,604800",
+            "field_type": "text"
+        },
+        {
+            "name": "Edit max revisions",
+            "description": "How many older contents one paste keeps from same-link edits. Past this the owner saves a new version with a new link.",
+            "env_variable": "EDIT_MAX_REVISIONS",
             "default_value": "20",
             "user_viewable": true,
             "user_editable": true,

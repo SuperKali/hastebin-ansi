@@ -16,6 +16,7 @@ Public instance: <https://paste.superkali.me>
 - The real client IP behind Cloudflare, cloudflared or another trusted proxy.
 - Security headers with a Content Security Policy, SRI on the CDN scripts, paste keys hidden in the access log, and `noindex` for search engines.
 - Six storage backends: file, Redis, Memcached, MongoDB, PostgreSQL and S3.
+- Optional GitHub login. Logged in users get a dashboard of their pastes, private pastes, editing under the same link for a few minutes, API tokens for curl and MCP, and an export of their data. Admins get a page for moderation, users, bans, server status and an audit log. Anonymous use stays as it is.
 - Docker, docker compose and a Pterodactyl egg, with images for amd64 and arm64.
 - Written in Go: a single binary with the web page built in.
 
@@ -244,7 +245,7 @@ The egg in `pterodactyl/egg-hastebin-ansi.json` offers two images, both built by
 1. Import the egg in the panel (Admin > Nests > Import Egg).
 2. Create a server with it. The install script writes `config.yaml` and creates `data/`. Egg variables (storage, limits, proxy, MCP) are passed as environment variables and override `config.yaml`.
 
-The egg sets `max_length` to 32 MiB, `base_url` to `https://paste.superkali.me` (change it to your address), and keeps rate limiting on (500 requests per 15 seconds). Give the server 640 MiB of RAM or more to keep the default `memory_budget` of 256 MiB: the server uses at most 40 percent of its memory limit as `memory_budget`, and keeps the rest for itself and for the kernel (see `memory_budget`). With less RAM it lowers `memory_budget` by itself, so 300 MiB still works, with smaller limits. The egg keeps `EXPIRATION` at 0, so pastes are never deleted. On a public server set it, for example to 2592000 (30 days), so the disk does not fill up; `min_free_disk` stops uploads before it is full either way. The egg also trusts `172.18.0.1` as a proxy with `CF-Connecting-IP` as the client IP header. Read the reverse proxy section below before you expose the port, and bind the allocation to `127.0.0.1` when you keep that setting.
+The egg sets `max_length` to 32 MiB, `base_url` to `https://paste.superkali.me` (change it to your address), and keeps rate limiting on (500 requests per 15 seconds). Give the server 640 MiB of RAM or more to keep the default `memory_budget` of 256 MiB: the server uses at most 40 percent of its memory limit as `memory_budget`, and keeps the rest for itself and for the kernel (see `memory_budget`). With less RAM it lowers `memory_budget` by itself, so 300 MiB still works, with smaller limits. The egg sets `EXPIRATION` to 31536000 (1 year): an anonymous paste is deleted after a year without being read or written. Pastes of logged in users are not affected. With file storage this also deletes the anonymous paste files you already have that are older than that, so back up the data folder before you import the egg on an existing server, or set `EXPIRATION` to 0 to keep everything. The code default stays 0 (never), so Docker and binary installs keep their old behaviour. `min_free_disk` stops uploads before the disk is full either way. The egg also trusts `172.18.0.1` as a proxy with `CF-Connecting-IP` as the client IP header. Read the reverse proxy section below before you expose the port, and bind the allocation to `127.0.0.1` when you keep that setting.
 
 Moving a server from the old egg that built from source:
 
@@ -276,7 +277,7 @@ Settings come from `config.yaml` (or the file given with `--config`). An environ
 | `not_found_limit` | `NOT_FOUND_LIMIT` | `30` | Lookups of unknown keys one client may make within `not_found_window` before it is banned from lookups. `-1` turns the ban off |
 | `not_found_window` | `NOT_FOUND_WINDOW` | `900` | Seconds over which unknown key lookups are counted |
 | `not_found_ban` | `NOT_FOUND_BAN` | `3600` | Seconds a banned client gets 429 on lookups |
-| `expiration` | `EXPIRATION` | `0` | Paste lifetime in seconds. `0` means pastes never expire. With `file` storage, a value above 0 deletes old paste files (see below) |
+| `expiration` | `EXPIRATION` | `0` | Lifetime of anonymous pastes in seconds, counted from the last read or write. `0` means they never expire. The Pterodactyl egg sets 1 year. With `file` storage, a value above 0 deletes old paste files (see below) |
 | `mcp_enable` | `MCP_ENABLE` | `true` | Serve the MCP endpoint at `/mcp` |
 | `mcp_max_length` | `MCP_MAX_LENGTH` | `4194304` | Largest text `upload_log` accepts over MCP, in bytes. Never more than `max_length`. A negative value stops the server at startup |
 | `trusted_proxies` | `TRUSTED_PROXIES` | empty | Proxy IPs or CIDRs allowed to set the client IP. The env var is comma separated |
@@ -314,7 +315,7 @@ Settings come from `config.yaml` (or the file given with `--config`). An environ
 | `edit_window` | `EDIT_WINDOW` | `600` | Seconds after creation the owner may change a registered paste under the same link, until someone else opens it. `0` turns same-link editing off |
 | `edit_max_revisions` | `EDIT_MAX_REVISIONS` | `20` | Older texts one registered paste keeps from same-link edits, 1 to 1000. Past it, changes go to a new version |
 
-**expiration.** Seconds, 0 or more. Each view starts the lifetime again, so a paste goes away after that many seconds without being read. The `redis`, `memcached`, `mongodb` and `postgres` backends hand it to the database. The `file` backend checks the file's modification time: a read refreshes it, an older file is no longer served, and every 10 minutes a janitor deletes those files. **Turning `EXPIRATION` on with `file` storage deletes the pastes you already have that are older than that age**, so back up the data folder first if you want to keep them. The `s3` backend ignores it: use a bucket lifecycle rule. Pages from `documents` never expire.
+**expiration.** Seconds, 0 or more. Each view starts the lifetime again, so a paste goes away after that many seconds without being read. The `redis`, `memcached`, `mongodb` and `postgres` backends hand it to the database. The `file` backend checks the file's modification time: a read refreshes it, an older file is no longer served, and every 10 minutes a janitor deletes those files. **Turning `EXPIRATION` on with `file` storage deletes the pastes you already have that are older than that age**, so back up the data folder first if you want to keep them. The `s3` backend ignores it: use a bucket lifecycle rule. Pages from `documents` and pastes of logged in users never expire this way; with `file` storage their files, the older texts kept by edits and the accounts database are never touched by the janitor.
 
 **max_length.** The code default is 4000000 bytes. The Pterodactyl egg uses 32 MiB. MCP uploads have their own, lower limit, `mcp_max_length`.
 
@@ -382,41 +383,60 @@ Set `BASE_URL` to the public address as well, so the links from `/log` and MCP a
 
 The server sets `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `X-Robots-Tag: noindex, nofollow` on every response, so the proxy does not need to add them.
 
-## Accounts (preview)
+## Accounts
 
-GitHub login arrives in steps. This version has login, sessions, the dashboard with your own pastes and API tokens, and an admin status page. Private pastes are stored as private but still open with their link until the next step. Anonymous use does not change, and login stays off until `GITHUB_CLIENT_ID` is set. Do not turn it on for a public server yet.
+GitHub login is optional and off until `GITHUB_CLIENT_ID` is set. Anonymous use works the same with login on or off. A logged in user gets a dashboard of their own pastes, private pastes, editing under the same link, API tokens and MCP as themselves.
 
-To set it up:
+### Setup
 
 1. On GitHub, open Settings > Developer settings > OAuth Apps > New OAuth App.
 2. Set the homepage URL to your `BASE_URL`, and the authorization callback URL to `BASE_URL` followed by `/auth/github/callback`, for example `https://paste.example.com/auth/github/callback`.
 3. Generate a client secret, then set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`. In the Pterodactyl egg only panel admins can see the secret.
 4. Set `BASE_URL` to the public https address. With login on, the server does not start without it. Plain http is accepted only on `localhost` or `127.0.0.1`, for tests; the cookies then lose `Secure` and the `__Host-` prefix.
-5. Put your numeric GitHub id in `ADMIN_GITHUB_IDS` (`https://api.github.com/users/<login>` shows it as `id`). Admins get the status page at `/admin`; everyone else gets 404 there.
+5. To be an admin, put your numeric GitHub id in `ADMIN_GITHUB_IDS` (`https://api.github.com/users/<login>` shows it as `id`).
 
 The app asks GitHub for no scopes. The server needs outbound https to `github.com` and `api.github.com`. Accounts do not work with `memcached` storage, which can evict pastes at any time: the server refuses to start.
 
-The server keeps accounts in the SQLite file `hastebin.db` in the data folder (or `ACCOUNTS_DB`), with mode 0600. It stores the GitHub id, login name and account times, and for each login the SHA-256 of its cookie and a CSRF token. It stores no GitHub token, e-mail address or IP address. The GitHub token is used once to read who logged in, then dropped. An account is tied to the numeric GitHub id, so a renamed or reused login name never gets someone else's account. A GitHub account younger than 7 days cannot register. The database is created when login is first turned on, and kept with its sessions if login is turned off later.
+A GitHub account younger than `REGISTER_MIN_ACCOUNT_AGE` (7 days) cannot register; admins are exempt. An account is tied to the numeric GitHub id, so a renamed or reused login name never gets someone else's account.
 
-Back up the database with:
+The server keeps accounts in the SQLite file `hastebin.db` in the data folder (or `ACCOUNTS_DB`), with mode 0600. It is created when login is first turned on. If you turn login off later, the file is still loaded: private pastes stay private and existing sessions keep working, but nobody new can log in.
 
-```sh
-hastebin --config config.yaml --backup-db /path/to/hastebin-backup.db
-```
+What is stored per account: the GitHub id, login name and avatar URL, the account times (joined, last login, last seen), the default visibility for new pastes, and for each login the SHA-256 of its cookie and a CSRF token. API tokens are stored as a SHA-256 hash and their first characters. The server does not store the GitHub access token (it reads who logged in once, then drops it), your e-mail address or any IP address.
 
-It writes a consistent copy with SQLite `VACUUM INTO` and is safe while the server runs. The target file must not exist yet; it gets mode 0600. Copying `hastebin.db` while the server runs is not a backup, as the latest changes are still in `hastebin.db-wal`. In Docker or Pterodactyl, run it in the running container: `docker exec <container> hastebin --config config.yaml --backup-db data/hastebin-backup.db` (in the distroless image the binary is `/bin/hastebin` and the config `/app/config.yaml`).
+### Dashboard
 
-### Your pastes
+The dashboard is at `/dashboard`. The account menu (your avatar in the top bar) leads to it from every page.
 
-A paste saved on the web page while you are logged in, or uploaded with one of your API tokens, is yours. It never expires, even when `EXPIRATION` is set, and it counts against your own limits (`REGISTERED_MAX_LENGTH`, `REGISTERED_UPLOAD_QUOTA`, `USER_STORAGE_LIMIT`, `USER_MAX_PASTES`) instead of the anonymous ones. Pastes from before you logged in stay anonymous and cannot be claimed.
+- The My pastes tab lists your pastes, 25 per page, with search on title, key and language, filters for visibility, language and tags, and sorting. You can delete one paste or select many. A deleted paste is gone from the list at once; its content is removed from the store right after.
+- A paste opens in its own page: open, download, copy the link, duplicate or delete it; change its title, language, visibility, expiry and tags; see its size, views, versions and edit history.
+- The Tokens tab creates and revokes API tokens.
+- The Account tab shows your usage and limits, sets whether new pastes are shared by link or private, logs you out everywhere (and can revoke every token at the same time), exports your data and deletes the account. To delete it you type your login.
 
-The dashboard at `/dashboard` lists your pastes, 25 per page, with search on title, key and language, filters for visibility, language and tags, and sorting. From there you delete one paste or many at once. A deleted paste is gone from the list at once; its content is removed from the store right after. The Account tab shows your usage and limits, sets whether new pastes are shared by link or private, logs you out everywhere (and can revoke every token at the same time), exports the details of your pastes as JSON, and deletes the account with everything in it.
+A paste saved on the web page while you are logged in, or uploaded with one of your API tokens, is yours. It never expires, even when `EXPIRATION` is set, unless you give it an expiry date. It counts against your own limits (`REGISTERED_MAX_LENGTH`, `REGISTERED_UPLOAD_QUOTA`, `USER_STORAGE_LIMIT`, `USER_MAX_PASTES`) instead of the anonymous ones. Pastes from before you logged in stay anonymous and cannot be claimed.
 
-The dashboard API under `/api/v1` needs a login session: every change also needs the `X-CSRF-Token` header from `GET /api/v1/session` and a JSON body. API tokens do not work there; they are for uploads and [MCP](#with-an-api-token). Each user may make 120 reads and 30 changes a minute, create 10 tokens an hour and try to delete the account 3 times a day.
+The dashboard API under `/api/v1` needs a login session: every change also needs the `X-CSRF-Token` header from `GET /api/v1/session` and a JSON body. API tokens do not work there; they are for uploads, reads and [MCP](#with-an-api-token). Each user may make 120 reads and 30 changes a minute, create 10 tokens an hour and try to delete the account 3 times a day.
+
+### Private pastes
+
+A paste is shared by link (anyone with the link can open it) or private. A private paste opens only for its owner: with the login cookie on the web page, or with one of their tokens on `/raw`, `/documents` and MCP. Everyone else, other users and MCP without the owner's token included, gets 404, the same answer as for a key that does not exist. `HEAD` and `Range` requests follow the same rule.
+
+You choose the visibility when you save (`X-Paste-Visibility` with curl, `visibility` over MCP), set a default on the Account tab, and change it later in the dashboard.
+
+A paste with an expiry date answers 404 from that moment for everyone, its owner included, and is deleted within a minute.
+
+Views are counted only for reads by someone other than the owner. The dashboard shows the count and when the paste was last opened, never who opened it.
+
+### Editing rules
+
+You can change the text of your paste under the same link for `EDIT_WINDOW` seconds after you save it (10 minutes by default), as long as nobody else has opened it. The first read by someone else on `/raw`, `/documents` or MCP ends that window, so nobody but you ever sees two different texts under one link. A browser that opens the paste page reads `/documents`, so it ends the window too. Link previews in chat apps fetch only the page itself (`/<key>`), which does not. Your own reads never do. While the window is open, the paste page shows you an Edit link with the time left.
+
+After the window, or once someone has opened the paste, a change is saved as a new version with a new link. The new version keeps the title, language, visibility, expiry and tags, and the dashboard links the versions together. You can delete the previous version in the same step. Duplicate makes a plain copy under a new link.
+
+Each change under the same link keeps the older text. That history is for the owner only, in the dashboard; no paste route or MCP tool serves it. A paste keeps at most `EDIT_MAX_REVISIONS` older texts (20); past that, changes go to a new version. Readers see that a paste was changed: "edited at" on the page, `X-Paste-Edited` on `/raw` and `/documents`.
 
 ### API tokens and curl
 
-Create a token on the Tokens tab of the dashboard. It looks like `hbp_` and 49 letters and digits, and it is shown once: the server keeps only its SHA-256 and the first characters, to tell your tokens apart. Send it in the `Authorization` header, never in the URL:
+Create a token on the Tokens tab of the dashboard. It looks like `hbp_` and 49 letters and digits, and it is shown once. Send it in the `Authorization` header, never in the URL:
 
 ```sh
 curl --data-binary @build.log \
@@ -434,14 +454,54 @@ The same works on `POST /documents`. These optional headers describe the paste:
 | `X-Paste-Tags` | Up to 10 tags, comma separated. A tag is 1 to 32 lowercase letters, digits, `.`, `_` or `-`, starting with a letter or digit. Upper case is lowered, duplicates dropped |
 | `X-Paste-Visibility` | `link` or `private`. Without it, your default from the Account tab |
 | `X-Paste-Expires` | An RFC 3339 time in the future, such as `2030-01-02T15:04:05Z` |
+| `X-Paste-Language` | The language shown in the dashboard. Without it, the extension in `?ext=` (`/log?ext=py`) |
 
-They count only on uploads with a token or a login; anonymous uploads ignore them. A value the server does not accept answers 400 and nothing is stored. Visibility and expiry are stored now and take effect in the next step.
+They count only on uploads with a token or a login; anonymous uploads ignore them. A value the server does not accept answers 400 and nothing is stored.
 
-A token that is malformed, unknown or revoked answers 401 with `WWW-Authenticate: Bearer realm="hastebin", error="invalid_token"`; the upload never falls back to anonymous. A token revoked while an upload is still arriving stops it too: the content is deleted and the answer is 401. Over your limits an upload answers 413 (largest paste or storage full), 403 (too many pastes) or 429 (hourly quota). On the web page, a paste is yours only when the page sends the CSRF token along, which it does by itself when you are logged in; a plain cookie on `POST /documents` still makes an anonymous paste.
+Read your own private paste with the same header:
+
+```sh
+curl -H "Authorization: Bearer $HASTEBIN_TOKEN" https://paste.example.com/raw/<key>
+```
+
+A token that is malformed, unknown or revoked answers 401 with `WWW-Authenticate: Bearer realm="hastebin", error="invalid_token"`; the request never falls back to anonymous. A token revoked while an upload is still arriving stops it too: the content is deleted and the answer is 401. Over your limits an upload answers 413 (largest paste or storage full), 403 (too many pastes) or 429 (hourly quota). On the web page, a paste is yours only when the page sends the CSRF token along, which it does by itself when you are logged in; a plain cookie on `POST /documents` still makes an anonymous paste.
 
 To download a paste as a file, add `?download=1` to its `/raw` link: `/raw/<key>.log?download=1` saves `<key>.log`.
 
 For tests against a fake GitHub, `GITHUB_OAUTH_BASE` and `GITHUB_API_BASE` (`github_oauth_base`, `github_api_base`) replace `https://github.com` and `https://api.github.com`. They take https, or http only on `localhost` or `127.0.0.1`. Never set them on a real server.
+
+### Admin
+
+The GitHub ids in `ADMIN_GITHUB_IDS` are admins. They get the admin page at `/admin` (also in the account menu), with five tabs. For everyone else `/admin` and its API answer 404. API tokens never act as an admin.
+
+- Moderation starts from a report: you look a paste up by its key or link, there is no list to browse. Showing its content needs a reason. You can delete a paste, or remove it as abuse: then its key answers 410 from then on (404 if it was private) and its owner, if it has one, gets a strike.
+- Users lists the accounts with their usage. You can disable an account (its sessions and tokens stop working at once, until you enable it again), log it out everywhere and revoke its tokens, or delete it. Admin accounts cannot be disabled, revoked or deleted from here, your own included.
+- Abuse shows recent refusals (rate limits, quotas, key guessing, full disk, busy server) and manual bans. A manual ban blocks one IPv4 address or IPv6 /64 on every route but `/health`, for a set time or until lifted. Manual bans are kept in the database and survive a restart.
+- Status shows the version, uptime, disk, memory budget, upload slots, account counts and the settings in use, with secrets shown only as `set` or `unset`.
+- Audit lists every admin action and every account deletion, newest first. Rows can be added, never changed or removed.
+
+Destructive actions (deleting, showing content, disabling, revoking, banning) need a GitHub login younger than `ADMIN_REAUTH` seconds (12 hours). With an older one the page sends you through GitHub again and back.
+
+### Backup
+
+Back up the accounts database with:
+
+```sh
+hastebin --config config.yaml --backup-db /path/to/hastebin-backup.db
+```
+
+It writes a consistent copy with SQLite `VACUUM INTO` and is safe while the server runs and takes uploads. The target file must not exist yet; it gets mode 0600. Copying `hastebin.db` while the server runs is not a backup, as the latest changes are still in `hastebin.db-wal`. In Docker or Pterodactyl, run it in the running container: `docker exec <container> hastebin --config config.yaml --backup-db data/hastebin-backup.db` (in the distroless image the binary is `/bin/hastebin` and the config `/app/config.yaml`). The paste contents are the files in the data folder (or your storage backend): back them up as well.
+
+### Privacy
+
+- Pastes are not stored with an IP address, anonymous or not.
+- The request log shows the client address, with paste keys hidden (see key guessing). Rate limits, quotas and the recent refusals on the Abuse tab are kept in memory only, per address. Only manual bans, and their rows in the audit log, store an address in the database.
+- An admin can see the metadata of any paste found by its key, and its content only after giving a reason, which goes in the audit log.
+- Deleting your account removes your sessions, tokens, pastes and their older texts. The audit log keeps one row with your login name and the time.
+
+### Export
+
+The Account tab downloads your data as one JSON file, from `GET /api/v1/account/export`: your account, your tokens (names, prefixes and times, never the token itself) and the details of every paste (key, title, language, visibility, size, views, times, tags, version and links to the previous and next version). The paste texts are not in it; download them with `/raw/<key>?download=1`.
 
 ## Storage backends
 

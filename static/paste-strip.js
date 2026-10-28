@@ -1,6 +1,6 @@
 // The strip under the button bar of a paste. Its owner gets
 // "Edit (m:ss left) | Link or Private | Dashboard"; everyone sees
-// "edited at HH:MM" once the owner changed the text under the same link.
+// "edited at HH:MM" (or the day) once the owner changed the text under the same link.
 // Values from the server are set with .text() and attributes only.
 var paste_strip = (function () {
     'use strict';
@@ -17,6 +17,22 @@ var paste_strip = (function () {
 
     function pad(n) {
         return (n < 10 ? '0' : '') + n;
+    }
+
+    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    // "edited at 17:59" today, "edited Oct 27" on another day, no seconds
+    function editedText(t) {
+        var now = new Date();
+        if (t.toDateString() === now.toDateString()) {
+            return 'edited at ' + pad(t.getHours()) + ':' + pad(t.getMinutes());
+        }
+        var day = MONTHS[t.getMonth()] + ' ' + t.getDate();
+        return 'edited ' + (t.getFullYear() === now.getFullYear() ? day : day + ', ' + t.getFullYear());
+    }
+
+    function fullDate(t) {
+        return MONTHS[t.getMonth()] + ' ' + t.getDate() + ', ' + t.getFullYear() + ', ' + pad(t.getHours()) + ':' + pad(t.getMinutes());
     }
 
     function stop() {
@@ -50,8 +66,8 @@ var paste_strip = (function () {
         key = k;
         $s('.ps-owner').prop('hidden', !owner);
         $s('.ps-edited').prop('hidden', !edited)
-            .text(edited ? 'edited at ' + pad(edited.getHours()) + ':' + pad(edited.getMinutes()) : '')
-            .attr('title', edited ? edited.toLocaleString() : '');
+            .text(edited ? editedText(edited) : '')
+            .attr('title', edited ? fullDate(edited) : '');
         if (owner) {
             $s('.ps-edit').attr('href', '/dashboard/p/' + encodeURIComponent(k));
             visibility = meta.visibility === 'private' ? 'private' : 'link';

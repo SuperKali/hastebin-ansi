@@ -46,30 +46,58 @@ $(function () {
         return (n < 10 ? '0' : '') + n;
     }
 
-    // Short date: the time today, the day this year, else the day and year
+    function parse(iso) {
+        var t = iso ? new Date(iso) : null;
+        return t && !isNaN(t.getTime()) ? t : null;
+    }
+
+    function clock(t) {
+        return pad(t.getHours()) + ':' + pad(t.getMinutes());
+    }
+
+    // Short date, never with seconds: "just now" and "12 min ago" in the
+    // last hour, the time for the rest of today, else the day, with the
+    // year when it is not this one
     function short(iso) {
-        if (!iso) {
-            return '-';
-        }
-        var t = new Date(iso);
-        if (isNaN(t.getTime())) {
+        var t = parse(iso);
+        if (!t) {
             return '-';
         }
         var now = new Date();
+        var ago = (now.getTime() - t.getTime()) / 60000;
+        if (ago >= 0 && ago < 1) {
+            return 'just now';
+        }
+        if (ago >= 1 && ago < 60) {
+            return Math.floor(ago) + ' min ago';
+        }
         if (t.toDateString() === now.toDateString()) {
-            return pad(t.getHours()) + ':' + pad(t.getMinutes());
+            return clock(t);
         }
         var day = MONTHS[t.getMonth()] + ' ' + t.getDate();
         return t.getFullYear() === now.getFullYear() ? day : day + ', ' + t.getFullYear();
     }
 
+    // Full date for titles and settings: "Oct 28, 2026, 17:59"
     function full(iso) {
-        if (!iso) {
-            return '';
-        }
-        var t = new Date(iso);
-        return isNaN(t.getTime()) ? '' : t.toLocaleString();
+        var t = parse(iso);
+        return t ? MONTHS[t.getMonth()] + ' ' + t.getDate() + ', ' + t.getFullYear() + ', ' + clock(t) : '';
     }
+
+    // stamp shows a short date that stays current: tick redraws it
+    function stamp($el, iso) {
+        return $el.text(short(iso)).attr({ title: full(iso), 'data-t': iso || '' });
+    }
+
+    // Relative dates go stale: redraw them once a minute
+    setInterval(function () {
+        $('[data-t]').each(function () {
+            var iso = this.getAttribute('data-t');
+            if (iso) {
+                this.textContent = short(iso);
+            }
+        });
+    }, 60000);
 
     function plural(n, one, many) {
         return count(n) + ' ' + (n === 1 ? one : many);
@@ -481,10 +509,11 @@ $(function () {
         $row.find('.vis-private').prop('hidden', p.visibility !== 'private');
         $row.find('.c-size').text(bytes(p.size));
         $row.find('.c-views').text(count(p.views));
-        $row.find('.c-opened').text(short(p.last_opened_at)).attr('title', full(p.last_opened_at));
-        $row.find('.c-created').text(short(p.created_at)).attr('title', full(p.created_at));
-        var meta = [p.language || null, p.visibility, bytes(p.size), plural(p.views, 'view', 'views'), short(p.created_at)];
-        $row.find('.c-meta').text(meta.filter(Boolean).join(' · '));
+        stamp($row.find('.c-opened'), p.last_opened_at);
+        stamp($row.find('.c-created'), p.created_at);
+        var meta = [p.language || null, p.visibility, bytes(p.size), plural(p.views, 'view', 'views')];
+        $row.find('.c-meta').text(meta.filter(Boolean).join(' · ') + ' · ')
+            .append(stamp($('<span></span>'), p.created_at));
         $row.find('.menu summary').attr('aria-label', 'Actions for ' + name);
         $row.find('.m-view').attr('href', view);
         $row.find('.m-edit').attr('href', detail).attr('data-nav', '1');
@@ -716,8 +745,12 @@ $(function () {
                 $row.data('id', t.id).data('name', t.name);
                 $row.find('.t-name').text(t.name);
                 $row.find('.t-prefix code').text(t.prefix + '…');
-                $row.find('.t-created').text(short(t.created_at)).attr('title', full(t.created_at));
-                $row.find('.t-used').text(t.last_used_at ? short(t.last_used_at) : 'never').attr('title', full(t.last_used_at));
+                stamp($row.find('.t-created'), t.created_at);
+                if (t.last_used_at) {
+                    stamp($row.find('.t-used'), t.last_used_at);
+                } else {
+                    $row.find('.t-used').text('never');
+                }
                 $row.find('.revoke').attr('aria-label', 'Revoke ' + t.name);
                 $body.append($row);
             });
@@ -911,7 +944,7 @@ $(function () {
     // What the paste page (paste-detail.js) shares with the rest of the dashboard
     var helpers = {
         api: api, toast: toast, notice: notice, errorText: errorText, confirmAction: confirmAction,
-        copyText: copyText, bytes: bytes, count: count, short: short, full: full, plural: plural,
+        copyText: copyText, bytes: bytes, count: count, short: short, full: full, stamp: stamp, plural: plural,
         navigate: navigate, listPath: listPath,
         session: function () {
             return session;

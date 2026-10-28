@@ -54,27 +54,43 @@ $(function () {
         return t && !isNaN(t.getTime()) ? t : null;
     }
 
-    // Full date and time, for titles and the Status tab
-    function when(iso) {
-        var t = parse(iso);
-        return t ? t.toLocaleString() : '-';
+    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    function pad(n) {
+        return (n < 10 ? '0' : '') + n;
     }
 
-    // Short: the time today, else the day, with the year when not this one
+    function clock(t) {
+        return pad(t.getHours()) + ':' + pad(t.getMinutes());
+    }
+
+    // Full date, for titles and the Status tab: "Oct 28, 2026, 17:59"
+    function when(iso) {
+        var t = parse(iso);
+        return t ? MONTHS[t.getMonth()] + ' ' + t.getDate() + ', ' + t.getFullYear() + ', ' + clock(t) : '-';
+    }
+
+    // Short date, never with seconds: "just now" and "12 min ago" in the
+    // last hour, the time for the rest of today, else the day, with the
+    // year when it is not this one. Same rules as the dashboard.
     function short(iso) {
         var t = parse(iso);
         if (!t) {
             return '-';
         }
         var now = new Date();
+        var ago = (now.getTime() - t.getTime()) / 60000;
+        if (ago >= 0 && ago < 1) {
+            return 'just now';
+        }
+        if (ago >= 1 && ago < 60) {
+            return Math.floor(ago) + ' min ago';
+        }
         if (t.toDateString() === now.toDateString()) {
-            return 'today ' + t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            return clock(t);
         }
-        var opts = { month: 'short', day: 'numeric' };
-        if (t.getFullYear() !== now.getFullYear()) {
-            opts.year = 'numeric';
-        }
-        return t.toLocaleDateString([], opts);
+        var day = MONTHS[t.getMonth()] + ' ' + t.getDate();
+        return t.getFullYear() === now.getFullYear() ? day : day + ', ' + t.getFullYear();
     }
 
     // How long until a time: "in 3h", "in 12m"
@@ -94,8 +110,19 @@ $(function () {
     }
 
     function timeCell(iso, fmt) {
-        return $('<time></time>').attr({ datetime: iso || '', title: when(iso) }).text((fmt || short)(iso));
+        var $t = $('<time></time>').attr({ datetime: iso || '', title: when(iso) }).text((fmt || short)(iso));
+        if (iso && !fmt) {
+            $t.attr('data-t', iso);
+        }
+        return $t;
     }
+
+    // Relative dates go stale: redraw them once a minute
+    setInterval(function () {
+        $('time[data-t]').each(function () {
+            this.textContent = short(this.getAttribute('data-t'));
+        });
+    }, 60000);
 
     function plural(n, word) {
         return count(n) + ' ' + word + (n === 1 ? '' : 's');
@@ -999,7 +1026,7 @@ $(function () {
             renderLoad(st);
             renderMCP(st);
             renderConfig(st);
-            $('.updated').text('Updated ' + new Date().toLocaleTimeString());
+            $('.updated').text('Updated ' + clock(new Date()));
         }).fail(function (xhr) {
             notice(xhr.status === 404 ? 'Your session ended. Log in again as an admin.' : 'The status could not be loaded. It is retried in 30 seconds.');
         }).always(function () {

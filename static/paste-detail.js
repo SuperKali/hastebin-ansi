@@ -36,6 +36,17 @@ var paste_detail = (function () {
         return isNaN(t.getTime()) ? '' : pad(t.getHours()) + ':' + pad(t.getMinutes());
     }
 
+    // The time of an edit: edits come minutes apart, so the clock time
+    // ("18:20") tells them apart better than "1 min ago"; the day goes
+    // first when it is not today
+    function editTime(iso) {
+        var t = new Date(iso);
+        if (isNaN(t.getTime())) {
+            return '-';
+        }
+        return t.toDateString() === new Date().toDateString() ? clock(iso) : ui.short(iso) + ' ' + clock(iso);
+    }
+
     function mmss(ms) {
         var s = Math.max(Math.ceil(ms / 1000), 0);
         return Math.floor(s / 60) + ':' + pad(s % 60);
@@ -167,22 +178,29 @@ var paste_detail = (function () {
         return t.getFullYear() + '-' + pad(t.getMonth() + 1) + '-' + pad(t.getDate()) + 'T' + pad(t.getHours()) + ':' + pad(t.getMinutes());
     }
 
-    function stat($dl, label, value, title) {
-        var $dd = jQuery('<dd></dd>').text(value);
-        if (title) {
-            $dd.attr('title', title);
+    function stat($dl, label, value) {
+        var $dd = jQuery('<dd></dd>');
+        if (typeof value === 'string') {
+            $dd.text(value);
+        } else {
+            $dd.append(value);
         }
         $dl.append(jQuery('<dt></dt>').text(label), $dd);
+    }
+
+    // A short date that keeps itself current, or a word when there is none
+    function when(iso, none) {
+        return iso ? ui.stamp(jQuery('<span></span>'), iso) : none;
     }
 
     function renderStats(p) {
         var $dl = $('.d-stats').empty();
         stat($dl, 'Size', ui.bytes(p.size));
         stat($dl, 'Views', ui.count(p.views));
-        stat($dl, 'Last opened', p.last_opened_at ? ui.short(p.last_opened_at) : 'never', ui.full(p.last_opened_at));
-        stat($dl, 'Created', ui.short(p.created_at), ui.full(p.created_at));
-        stat($dl, 'Edited', p.edited_at ? 'at ' + clock(p.edited_at) + ', ' + ui.plural(p.edit_count, 'time', 'times') : 'never',
-            ui.full(p.edited_at));
+        stat($dl, 'Last opened', when(p.last_opened_at, 'never'));
+        stat($dl, 'Created', when(p.created_at, '-'));
+        stat($dl, 'Edited', p.edited_at ? jQuery('<span></span>').append(when(p.edited_at),
+            document.createTextNode(', ' + ui.plural(p.edit_count, 'time', 'times'))) : 'never');
         stat($dl, 'Expires', p.expires_at ? ui.full(p.expires_at) : 'never');
     }
 
@@ -203,10 +221,10 @@ var paste_detail = (function () {
                 $li.addClass('gone').append(jQuery('<span></span>').append($num, jQuery('<span class="v-when"></span>').text('deleted')));
             } else if (v.key === p.key) {
                 $li.addClass('current').attr('aria-current', 'true').append(jQuery('<span></span>')
-                    .append($num, jQuery('<span class="v-when"></span>').text(ui.short(v.created_at) + ', this one')));
+                    .append($num, jQuery('<span class="v-when"></span>').append(when(v.created_at, '-'), document.createTextNode(', this one'))));
             } else {
                 var $a = jQuery('<a data-nav="1"></a>').attr('href', '/dashboard/p/' + enc(v.key))
-                    .append($num, jQuery('<span class="v-when"></span>').text(ui.short(v.created_at)));
+                    .append($num, jQuery('<span class="v-when"></span>').append(when(v.created_at, '-')));
                 $li.append($a);
             }
             $list.append($li);
@@ -218,7 +236,8 @@ var paste_detail = (function () {
         var revs = (p.revisions || []).slice().reverse();
         if (revs.length) {
             var $now = jQuery('<li class="current"></li>');
-            $now.append(jQuery('<span class="h-when"></span>').text(clock(p.edited_at || p.created_at)),
+            $now.append(jQuery('<span class="h-when"></span>').text(editTime(p.edited_at || p.created_at))
+                .attr('title', ui.full(p.edited_at || p.created_at)),
                 jQuery('<span class="h-size"></span>').text(ui.bytes(p.size)),
                 jQuery('<span class="h-what"></span>').text('current'));
             $list.append($now);
@@ -227,8 +246,8 @@ var paste_detail = (function () {
             var $li = jQuery('<li></li>');
             var $view = jQuery('<a target="_blank" rel="noopener"></a>')
                 .attr('href', '/api/v1/pastes/' + enc(p.key) + '/revisions/' + r.rev).text('View')
-                .attr('aria-label', 'View the text saved before ' + clock(r.created_at));
-            $li.append(jQuery('<span class="h-when"></span>').text(clock(r.created_at)).attr('title', ui.full(r.created_at)),
+                .attr('aria-label', 'View the text saved before ' + ui.full(r.created_at));
+            $li.append(jQuery('<span class="h-when"></span>').text(editTime(r.created_at)).attr('title', ui.full(r.created_at)),
                 jQuery('<span class="h-size"></span>').text(ui.bytes(r.size)), $view);
             $list.append($li);
         });

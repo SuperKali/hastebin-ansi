@@ -352,6 +352,44 @@ func TestOwnedPastesNeverExpire(t *testing.T) {
 	require.Equal(t, "owned", d.do(http.MethodGet, "/raw/"+owned, nil, nil).Body.String())
 }
 
+// With file storage and an expiration, the older contents that same-link
+// edits keep under <key>.r<n> never expire either, before or after a
+// restart. An expired file would be deleted by the first read, and the
+// janitor uses the same rule, so reading them after aging the files shows
+// the janitor would keep them too.
+func TestRevisionsNeverExpire(t *testing.T) {
+	var cfg *config.Config
+	d := newDash(t, func(c *config.Config) {
+		c.Expiration = 60
+		cfg = c
+	})
+	alice := loginAs(t, d.db, 43, "alice")
+	key := d.ownedUpload(alice, "first\n")
+	require.Equal(t, http.StatusOK, d.editContent(key, "second\n", alice).Code)
+
+	age := func(k string) {
+		sum := md5.Sum([]byte(k))
+		old := time.Now().Add(-2 * time.Hour)
+		require.NoError(t, os.Chtimes(filepath.Join(d.dir, hex.EncodeToString(sum[:])), old, old))
+	}
+	for _, restart := range []bool{false, true} {
+		if restart {
+			d.srv = d.start(cfg)
+		}
+		age(key)
+		age(accounts.RevisionKey(key, 1))
+		rec := d.api(http.MethodGet, "/api/v1/pastes/"+key+"/revisions/1", alice, nil)
+		require.Equal(t, http.StatusOK, rec.Code, "restart %v", restart)
+		require.Equal(t, "first\n", rec.Body.String())
+		require.Equal(t, "second\n", d.do(http.MethodGet, "/raw/"+key, nil, alice).Body.String())
+	}
+	require.Equal(t, 2, d.files())
+	for _, name := range []string{"hastebin.db", "hastebin.db-wal"} {
+		_, err := os.Stat(filepath.Join(d.dir, name))
+		require.NoError(t, err, name)
+	}
+}
+
 func TestDeleteRemovesStoredContent(t *testing.T) {
 	d := newDash(t, nil)
 	alice := loginAs(t, d.db, 51, "alice")

@@ -1377,13 +1377,26 @@ dialog.confirm p {
 /* Narrow screens: rows become two-line cards, filters fold away */
 
 @media (max-width: 760px) {
-    .tabs a span {
-        display: none;
+    /* Tabs: the icon with a short label under it */
+    .tabs {
+        gap: 0;
+        min-width: 0;
+    }
+
+    .tabs a {
+        flex-direction: column;
+        justify-content: center;
+        gap: 4px;
+        min-width: 44px;
+        padding: 2px 6px 0;
+        font-size: 11px;
+        line-height: 1;
+        white-space: nowrap;
     }
 
     .tabs a svg {
-        width: 18px;
-        height: 18px;
+        width: 17px;
+        height: 17px;
     }
 
     .top {
@@ -1393,10 +1406,6 @@ dialog.confirm p {
 
     .brand-name {
         display: none;
-    }
-
-    .tabs a {
-        padding: 0 11px;
     }
 
     .filters-bar {
@@ -1562,6 +1571,21 @@ dialog.confirm p {
 
     .copyrow.block .copy {
         align-self: flex-end;
+    }
+}
+
+/* The smallest phones: tighter tabs so five labels still fit */
+
+@media (max-width: 380px) {
+    .top {
+        gap: 4px;
+        padding: 0 8px;
+    }
+
+    .tabs a {
+        min-width: 0;
+        padding: 2px 4px 0;
+        font-size: 10.5px;
     }
 }
 

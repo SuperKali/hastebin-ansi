@@ -445,7 +445,7 @@ input[type="datetime-local"]:focus {
 
 .history li {
     display: grid;
-    grid-template-columns: 52px 1fr auto;
+    grid-template-columns: auto 1fr auto;
     align-items: center;
     gap: 10px;
     padding: 6px 0;
@@ -458,8 +458,10 @@ input[type="datetime-local"]:focus {
 }
 
 .h-when {
+    min-width: 42px;
     color: var(--strong);
     font-family: var(--mono);
+    white-space: nowrap;
 }
 
 .h-size {
