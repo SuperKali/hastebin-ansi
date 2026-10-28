@@ -102,6 +102,16 @@
         <a class="large-raw" href="#">Open the full file as plain text</a>
     </div>
 
+    <div id="login-ended" role="alertdialog" aria-labelledby="login-ended-title" aria-describedby="login-ended-text" hidden>
+        <p><strong id="login-ended-title">Not saved: your login has ended.</strong>
+            <span id="login-ended-text">Your text is still here. Sign in again to save it to your account, or save it as an anonymous public paste that anyone with the link can read.</span></p>
+        <div class="login-ended-actions">
+            <button type="button" class="login-ended-signin">Sign in again</button>
+            <button type="button" class="login-ended-anon">Save as anonymous public paste</button>
+            <button type="button" class="login-ended-close">Cancel</button>
+        </div>
+    </div>
+
     <div id="mcp-overlay" hidden>
         <div id="mcp-panel" role="dialog" aria-modal="true" aria-labelledby="mcp-title" aria-describedby="mcp-intro" tabindex="-1">
             <div class="mcp-head">

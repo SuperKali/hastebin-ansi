@@ -59,6 +59,11 @@ const (
 	tokenCreateWindow = time.Hour
 	deleteLimit       = 3
 	deleteWindow      = 24 * time.Hour
+
+	// UploadLimit is how many owned uploads to /documents and /log one
+	// account may send a minute, with a token or a login; the same as MCP
+	UploadLimit  = 120
+	uploadWindow = time.Minute
 )
 
 // Limits are what one registered user may keep and send. 0 or less means
@@ -102,6 +107,9 @@ type Handler struct {
 	recordEdit func(ctx context.Context, e accounts.Edit, limits accounts.Limits) (*accounts.Paste, error)
 
 	reads, writes, tokenCreates, deletes func(http.Handler) http.Handler
+
+	// uploads limits the owned uploads of each account, see allowUpload
+	uploads *httprate.RateLimiter
 }
 
 // New returns the handler of the dashboard API
@@ -111,6 +119,8 @@ func New(svc *auth.Service, db *accounts.DB, limits Limits, drainer *accounts.Dr
 	d.writes = UserLimit(writeLimit, writeWindow, d.limited)
 	d.tokenCreates = UserLimit(tokenCreateLimit, tokenCreateWindow, d.limited)
 	d.deletes = UserLimit(deleteLimit, deleteWindow, d.limited)
+	d.uploads = httprate.NewRateLimiter(UploadLimit, uploadWindow,
+		httprate.WithResponseHeaders(httprate.ResponseHeaders{RetryAfter: "Retry-After"}))
 	return d
 }
 

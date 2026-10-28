@@ -24,4 +24,7 @@ $(function () {
     app = new haste('hastebin', { twitter: false });
     app.loadInfo();
     handlePop({ target: window });
+    if (window.location.pathname === '/') {
+        app.restoreDraft();
+    }
 });

@@ -234,8 +234,8 @@ func safeName(s string) string {
 }
 
 // handleDeleteAccount answers DELETE /api/v1/account {confirm: "<login>"}:
-// in one transaction the sessions, tokens and paste rows go, and every
-// stored content is queued for deletion; 202, as the store catches up after
+// the sessions, tokens and paste rows go, and every stored content is
+// queued for deletion; 202, as the store catches up after
 func (d *Handler) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Confirm string `json:"confirm"`

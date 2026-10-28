@@ -52,11 +52,15 @@ audit_log(id PK, at, admin_user_id, admin_login, action, target, detail)  -- tri
 - OAuth state in memory (bounded 10k, TTL 10 min, single use) {pkce_verifier, return_to, reauth}, bound by cookie `__Host-hb_oauth` (HttpOnly, Secure, SameSite=Lax, Max-Age 600).
 - return_to: must start with `/`, not `//` or `/\`, no scheme or backslash, <= 512 bytes, else /dashboard. Stored server-side only.
 - Server-side sessions (no SESSION_KEY): cookie `__Host-hb_session` 32 random bytes, HttpOnly, Secure, Path=/, SameSite=Lax; DB stores sha256. Absolute 30 days, idle 7 days. New id at every login. Secure and redirect URI from BASE_URL, never from the request. With login configured, refuse to start if BASE_URL is empty or not https (except http://localhost, which drops `__Host-`).
-- CSRF on every cookie-authenticated state change: JSON body (or raw body on content routes) + header X-CSRF-Token == session token (constant time) + Origin, when present, == BASE_URL origin. Token from GET /api/v1/session. No CORS. On POST /documents the cookie counts only with a valid X-CSRF-Token, else anonymous as today. Bearer requests exempt; if both present, Bearer wins.
+- CSRF on every cookie-authenticated state change: JSON body (or raw body on content routes) + header X-CSRF-Token == session token (constant time) + Origin, when present, == BASE_URL origin. Token from GET /api/v1/session. No CORS. On POST /documents the cookie counts only with a valid X-CSRF-Token. Without X-CSRF-Token the upload is anonymous as today. With an X-CSRF-Token that does not resolve (session gone, wrong token, cross-site) the upload is 401 session_expired and nothing is stored; the page keeps the text and offers "Sign in again" or "Save as anonymous public paste". Bearer requests exempt; if both present, Bearer wins.
 - Personal tokens: `hbp_` + base62(32 random bytes) + 6-char base62 CRC32. Shown once; stored sha256 + display prefix (hbp_ab12cd). Max 20 per user. last_used_at updated at most once a minute. Never in query strings. Present but invalid/revoked -> 401 with `WWW-Authenticate: Bearer realm="hastebin", error="invalid_token"`, never anonymous fallback.
 - Per-user limits (httprate.LimitBy on u:<id>) on top of per-IP: API reads 120/min, writes 30/min, token creation 10/h, account deletion 3/day; login start 20 per 10 min per IP.
 - POST /api/v1/session/logout; logout-all deletes all sessions, optionally revokes all tokens.
-- Account deletion: type login to confirm; one transaction deletes sessions, tokens, paste rows; queues all store keys (pastes, revisions, versions). 202.
+- Account deletion: type login to confirm; sessions and tokens go first, then paste rows in chunks of 250, each chunk one short transaction that queues its store keys (pastes, revisions, versions); the user row and audit row last. 202.
+- A key whose content waits in delete_queue reads as missing for everyone (gate), so a deleted private paste is never served as anonymous while the drainer catches up.
+- Owned uploads to /documents and /log: 120 a minute per account (u:<id>), 429 with Retry-After, as on /mcp.
+- User ids come from AUTOINCREMENT (migration 0003), never reused.
+- Costly reads (dashboard list and search, tags, export, admin lists) run on their own pool of 2 connections with a 3 s timeout, so the gate and auth reads always have a connection; every list sort has an index (migration 0004).
 - Admin always on: ADMIN_GITHUB_IDS numeric ids, checked per request from config.
 
 ## 3. Authorization and read path
@@ -221,7 +225,7 @@ GET  /events?page=   GET /audit?page=
 ## 13. Tags (user decision 2026-10-28)
 Registered pastes carry up to 10 tags, used to find "attachments" (logs referenced from external memory notes).
 - Schema (in 0001_init.sql): `paste_tags(paste_key FK CASCADE, tag TEXT, PK(paste_key, tag))`, INDEX(tag, paste_key). Tag format: lowercase `[a-z0-9][a-z0-9._-]{0,31}`, normalized (trim, lowercase), max 10 per paste, duplicates dropped.
-- Upload: header `X-Paste-Tags: a,b,c` on /documents and /log (owned uploads only; ignored for anonymous); MCP userServer upload_log gets optional `tags: []string`.
+- Upload: header `X-Paste-Tags: a,b,c` on /documents and /log (owned uploads only; any X-Paste-* header without a token or login is 401 unauthenticated, never an anonymous paste); MCP userServer upload_log gets optional `tags: []string`.
 - API: item gains `tags[]`; PATCH accepts `tags`; GET /api/v1/pastes gains `tag=` (repeatable, AND); GET /api/v1/tags returns the user's tags with counts (bounded 200).
 - MCP: list_my_pastes gains optional `tags` filter; results include tags.
 - Dashboard: tag chips on rows, tag filter, edit tags in the detail form. Tags never visible to non-owners.

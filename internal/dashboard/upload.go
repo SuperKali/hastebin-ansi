@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/armbian/ansi-hastebin/handler"
+	"github.com/armbian/ansi-hastebin/internal/abuse"
 	"github.com/armbian/ansi-hastebin/internal/accounts"
 	"github.com/armbian/ansi-hastebin/internal/auth"
 	"github.com/rs/zerolog/log"
@@ -74,9 +76,37 @@ func writeBusy(w http.ResponseWriter) {
 	writeMessage(w, http.StatusServiceUnavailable, "The server is busy, try again shortly.")
 }
 
+// ownerIntent reports whether an upload asks for something only an owned
+// paste has: a session (X-CSRF-Token), a token (Authorization: Bearer) or
+// any X-Paste-* header. Such an upload is owned or refused, never stored
+// anonymous and public in its place. An upload without any of them is
+// anonymous, exactly as before accounts.
+func ownerIntent(r *http.Request) bool {
+	if r.Header.Get("X-CSRF-Token") != "" || auth.HasBearer(r) {
+		return true
+	}
+	for name := range r.Header {
+		if strings.HasPrefix(http.CanonicalHeaderKey(name), "X-Paste-") {
+			return true
+		}
+	}
+	return false
+}
+
+// writeUploadUnauthorized answers 401 to an upload with ownerIntent that no
+// account resolves: code is session_expired for a page whose login ended,
+// unauthenticated for X-Paste-* headers sent without a login or token
+func writeUploadUnauthorized(w http.ResponseWriter, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	json.NewEncoder(w).Encode(map[string]string{"error": code, "message": message})
+}
+
 // principal resolves who sends an upload: a bearer token first, then the
 // session cookie when the request passes the CSRF check. It returns nil for
 // an anonymous upload, and false when it refused the request and answered.
+// An upload with ownerIntent is never anonymous: without an account it is
+// 401 and nothing is stored.
 func (d *Handler) principal(w http.ResponseWriter, r *http.Request) (*auth.Principal, bool) {
 	var p *auth.Principal
 	var err error
@@ -90,6 +120,10 @@ func (d *Handler) principal(w http.ResponseWriter, r *http.Request) (*auth.Princ
 	case errors.Is(err, auth.ErrInvalidToken):
 		auth.WriteInvalidToken(w, false)
 		return nil, false
+	case errors.Is(err, auth.ErrSessionExpired):
+		writeUploadUnauthorized(w, "session_expired",
+			"Your login has ended, so the paste was not saved. Sign in again, or save it as an anonymous public paste.")
+		return nil, false
 	case errors.Is(err, auth.ErrDisabled):
 		writeMessage(w, http.StatusForbidden, "This account is disabled.")
 		return nil, false
@@ -98,13 +132,18 @@ func (d *Handler) principal(w http.ResponseWriter, r *http.Request) (*auth.Princ
 		writeBusy(w)
 		return nil, false
 	}
+	if p == nil && ownerIntent(r) {
+		writeUploadUnauthorized(w, "unauthenticated",
+			"X-Paste-* headers need an API token or a login, so the paste was not saved. Send your token in an Authorization: Bearer header, or leave the X-Paste-* headers out for an anonymous public paste.")
+		return nil, false
+	}
 	return p, true
 }
 
 // Uploaders tells who sends an upload to /documents or /log, for
 // handler.DocumentHandler.Uploaders. An owned upload never expires, is held
-// to the user's limits and quota, and records its row once its content is
-// stored; the token or session is checked again then.
+// to the user's limits, quota and upload rate, and records its row once
+// its content is stored; the token or session is checked again then.
 func (d *Handler) Uploaders(w http.ResponseWriter, r *http.Request) (handler.Uploader, bool) {
 	anonymous := handler.AnonymousUploader(r)
 	p, ok := d.principal(w, r)
@@ -113,6 +152,9 @@ func (d *Handler) Uploaders(w http.ResponseWriter, r *http.Request) (handler.Upl
 	}
 	if p == nil {
 		return anonymous, true
+	}
+	if !d.allowUpload(w, r, p) {
+		return anonymous, false
 	}
 
 	meta, err := parseUploadHeaders(r, p.User.DefaultVisibility, d.now())
@@ -129,6 +171,20 @@ func (d *Handler) Uploaders(w http.ResponseWriter, r *http.Request) (handler.Upl
 		return d.commit(r, p, meta, key, size)
 	}
 	return u, true
+}
+
+// allowUpload counts an owned upload against the upload rate of its user,
+// by user id whatever address or token it comes from, as MCP does. Over
+// it, it answers 429 with Retry-After and returns false.
+func (d *Handler) allowUpload(w http.ResponseWriter, r *http.Request, p *auth.Principal) bool {
+	id := strconv.FormatInt(p.User.ID, 10)
+	if !d.uploads.OnLimit(w, r, "u:"+id) {
+		return true
+	}
+	d.Events.Record(abuse.KindRateLimit, handler.ClientKey(handler.ClientIP(r)), "upload user "+id)
+	log.Info().Int64("user_id", p.User.ID).Msg("Upload rejected, the account sent too many uploads")
+	writeMessage(w, http.StatusTooManyRequests, "Too many uploads from your account: wait a minute, then retry.")
+	return false
 }
 
 // ownedUploader is the Uploader of content p stores in their account: the

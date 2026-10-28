@@ -233,3 +233,86 @@ func TestKeyLocks(t *testing.T) {
 	unlockB()
 	require.Zero(t, locks.held())
 }
+
+// TestGateHidesPendingDeletes: whatever removes a paste row, the key and its
+// revisions read as missing for everyone, the owner included, while their
+// content waits in the delete queue. Before, a key without a row was taken
+// for an anonymous public paste and the content of a deleted private one
+// was served until the drainer got to it.
+func TestGateHidesPendingDeletes(t *testing.T) {
+	ctx := context.Background()
+	g := newGateTest(t)
+	db := g.db
+	alice := g.alice.User.ID
+	for _, key := range []string{"own", "pub", "bulk1", "bulk2", "expired", "prev", "abused"} {
+		g.add(t, key, accounts.VisibilityPrivate, time.Time{})
+	}
+	_, err := db.W.Exec("UPDATE pastes SET visibility = 0 WHERE key IN ('pub', 'abused')")
+	require.NoError(t, err)
+	_, err = db.W.Exec("INSERT INTO paste_revisions (paste_key, rev, store_key, size, created_at) VALUES ('own', 1, 'own.r1', 1, 0)")
+	require.NoError(t, err)
+	carol, _, err := db.LoginUser(ctx, 3, "carol", "", true)
+	require.NoError(t, err)
+	require.NoError(t, db.InsertPaste(ctx, accounts.NewPaste{Key: "carols", UserID: carol.ID, Visibility: accounts.VisibilityPrivate, Size: 1},
+		accounts.Limits{}))
+
+	// Every way a row goes: owner delete, bulk delete, expiry, a new version
+	// that deletes the previous one, account delete, admin remove
+	_, _, err = db.DeletePastes(ctx, alice, []string{"own"})
+	require.NoError(t, err)
+	_, _, err = db.DeletePastes(ctx, alice, []string{"pub", "bulk1", "bulk2"})
+	require.NoError(t, err)
+	_, err = db.W.Exec("UPDATE pastes SET expires_at = 1 WHERE key = 'expired'")
+	require.NoError(t, err)
+	n, err := accounts.NewSweeper(db, nil).Sweep(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+	require.NoError(t, db.InsertPaste(ctx, accounts.NewPaste{Key: "next", UserID: alice, PrevKey: "prev", DeletePrevious: true, Size: 1},
+		accounts.Limits{}))
+	_, err = db.DeleteUser(ctx, carol)
+	require.NoError(t, err)
+	audit := func(key string) accounts.AuditEntry {
+		return accounts.AuditEntry{ActorLogin: "admin", Action: "paste.remove", Target: accounts.PasteTarget(key)}
+	}
+	_, err = db.RemovePaste(ctx, "anon", false, "", audit("anon"))
+	require.NoError(t, err)
+	_, err = db.RemovePaste(ctx, "abused", true, "spam", audit("abused"))
+	require.NoError(t, err)
+
+	for _, key := range []string{"own", "own.r1", "pub", "bulk1", "bulk2", "expired", "prev", "carols", "anon"} {
+		for _, reader := range []*auth.Principal{nil, g.bob, g.alice} {
+			_, err := g.gate.Check(ctx, key, reader, handler.OpRead)
+			require.ErrorIs(t, err, handler.ErrDenied, key)
+		}
+		require.ErrorIs(t, g.gate.ModeratorRead(ctx, key, g.bob.User.ID), handler.ErrDenied, key)
+	}
+	// An abuse tombstone keeps its 410
+	_, err = g.gate.Check(ctx, "abused", nil, handler.OpRead)
+	require.ErrorIs(t, err, handler.ErrRemoved)
+	// The new version is the owner's as usual
+	_, err = g.gate.Check(ctx, "next", g.alice, handler.OpRead)
+	require.NoError(t, err)
+
+	// Once the drainer deleted the content the key is free again: no row,
+	// nothing queued, and the store answers for it
+	drained := accounts.NewDrainer(db, func(string) error { return nil }).Drain(ctx)
+	require.Equal(t, 10, drained)
+	meta, err := g.gate.Check(ctx, "own", nil, handler.OpRead)
+	require.NoError(t, err)
+	require.False(t, meta.Owner)
+}
+
+// TestGateFailsClosed: when the database cannot answer, Check returns its
+// error and lets nothing through, for a private paste or any other key
+func TestGateFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	g := newGateTest(t)
+	g.add(t, "priv", accounts.VisibilityPrivate, time.Time{})
+	require.NoError(t, g.db.R.Close())
+	for _, key := range []string{"priv", "anon"} {
+		meta, err := g.gate.Check(ctx, key, nil, handler.OpRead)
+		require.Error(t, err, key)
+		require.NotErrorIs(t, err, handler.ErrDenied)
+		require.Nil(t, meta)
+	}
+}

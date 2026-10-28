@@ -8,8 +8,9 @@ import (
 )
 
 // Access is what the read path needs to know about a key: the row of a
-// registered paste and the tombstone of a removed one, either or both
-// missing. A key with neither is an anonymous paste, or none.
+// registered paste, the tombstone of a removed one and whether its content
+// waits in the delete queue, any of them missing. A key with none of them
+// is an anonymous paste, or none.
 type Access struct {
 	// Registered is set when a paste row exists; the fields below it are its own
 	Registered bool
@@ -25,20 +26,27 @@ type Access struct {
 	// TombstoneVisibility then
 	Tombstoned          bool
 	TombstoneVisibility int
+
+	// Pending is set while the content under the key waits in the delete
+	// queue: the paste, or the revision, was deleted and its row is gone.
+	// Such a key reads as missing for everyone, never as anonymous.
+	Pending bool
 }
 
-// AccessOf reads, in one query, what decides who may read key
+// AccessOf reads, in one query, what decides who may read key. Each part
+// is a primary key lookup.
 func (db *DB) AccessOf(ctx context.Context, key string) (*Access, error) {
 	var a Access
 	var user, visibility, created, tombVisibility sql.NullInt64
 	var expires, seen, edited sql.NullInt64
 	var language sql.NullString
 	err := db.R.QueryRowContext(ctx, `SELECT p.user_id, p.visibility, p.created_at, p.expires_at, p.seen_at, p.edited_at,
-		p.language, t.visibility
+		p.language, t.visibility, d.store_key IS NOT NULL
 		FROM (SELECT ? AS k) q
 		LEFT JOIN pastes p ON p.key = q.k
-		LEFT JOIN tombstones t ON t.key = q.k`, key).
-		Scan(&user, &visibility, &created, &expires, &seen, &edited, &language, &tombVisibility)
+		LEFT JOIN tombstones t ON t.key = q.k
+		LEFT JOIN delete_queue d ON d.store_key = q.k`, key).
+		Scan(&user, &visibility, &created, &expires, &seen, &edited, &language, &tombVisibility, &a.Pending)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +123,8 @@ func (db *DB) AddViews(ctx context.Context, counts map[string]ViewCount) error {
 
 // ExpirePastes deletes up to limit pastes whose expiry is at or before now,
 // in one transaction, and queues their content and revisions for deletion
-// from the store. It returns how many it deleted.
+// from the store. It returns how many it deleted. Like every delete it goes
+// through deletePaste.
 func (db *DB) ExpirePastes(ctx context.Context, now time.Time, limit int) (int, error) {
 	tx, err := db.W.BeginTx(ctx, nil)
 	if err != nil {
@@ -144,7 +153,7 @@ func (db *DB) ExpirePastes(ctx context.Context, now time.Time, limit int) (int, 
 	}
 	at := unix(db.now())
 	for _, key := range keys {
-		if err := deletePaste(ctx, tx, key, at); err != nil {
+		if _, err := deletePaste(ctx, tx, key, at); err != nil {
 			return 0, err
 		}
 	}
@@ -152,17 +161,29 @@ func (db *DB) ExpirePastes(ctx context.Context, now time.Time, limit int) (int, 
 }
 
 // deletePaste queues the content and revisions of a paste for deletion
-// from the store and deletes its row, inside tx
-func deletePaste(ctx context.Context, tx *sql.Tx, key string, now int64) error {
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO delete_queue (store_key, enqueued_at) SELECT store_key, ? FROM paste_revisions WHERE paste_key = ?
-		ON CONFLICT (store_key) DO NOTHING`, now, key); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx,
-		"INSERT INTO delete_queue (store_key, enqueued_at) VALUES (?, ?) ON CONFLICT (store_key) DO NOTHING", key, now); err != nil {
-		return err
+// from the store and deletes its row, inside tx. Every way a paste row goes
+// away goes through here, so the key and its revisions are in the delete
+// queue from the moment the row is gone, and AccessOf reports them Pending
+// until the drainer has deleted the content. Without that the gate would
+// take a key with no row for an anonymous public paste and serve the
+// content of a deleted private one until the drainer got to it.
+func deletePaste(ctx context.Context, tx *sql.Tx, key string, now int64) (int64, error) {
+	var queued int64
+	for _, q := range []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO delete_queue (store_key, enqueued_at) SELECT store_key, ? FROM paste_revisions WHERE paste_key = ?
+		ON CONFLICT (store_key) DO NOTHING`, []any{now, key}},
+		{"INSERT INTO delete_queue (store_key, enqueued_at) VALUES (?, ?) ON CONFLICT (store_key) DO NOTHING", []any{key, now}},
+	} {
+		res, err := tx.ExecContext(ctx, q.query, q.args...)
+		if err != nil {
+			return 0, err
+		}
+		n, _ := res.RowsAffected()
+		queued += n
 	}
 	_, err := tx.ExecContext(ctx, "DELETE FROM pastes WHERE key = ?", key)
-	return err
+	return queued, err
 }

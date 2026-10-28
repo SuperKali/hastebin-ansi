@@ -53,11 +53,14 @@ type Paste struct {
 }
 
 // pasteColumns are read by scanPaste. The tags come as one comma separated
-// string: a tag never holds a comma.
+// string: a tag never holds a comma. The newer version is looked up by
+// prev_key only: left to itself the planner may walk all of a user's pastes
+// for each row instead.
 const pasteColumns = `pastes.key, pastes.user_id, pastes.title, pastes.language, pastes.visibility, pastes.created_at,
 	pastes.expires_at, pastes.size, pastes.views, pastes.last_opened_at, pastes.seen_at, pastes.edited_at,
 	pastes.edit_count, pastes.root_key, pastes.version, pastes.prev_key,
-	(SELECT n.key FROM pastes n WHERE n.prev_key = pastes.key AND n.user_id = pastes.user_id ORDER BY n.created_at, n.key LIMIT 1),
+	(SELECT n.key FROM pastes AS n INDEXED BY pastes_prev WHERE n.prev_key = pastes.key AND n.user_id = pastes.user_id
+		ORDER BY n.created_at, n.key LIMIT 1),
 	(SELECT group_concat(tag, ',') FROM (SELECT tag FROM paste_tags WHERE paste_key = pastes.key ORDER BY tag))`
 
 func scanPaste(row interface{ Scan(...any) error }) (*Paste, error) {
@@ -197,7 +200,7 @@ func (db *DB) InsertPaste(ctx context.Context, p NewPaste, limits Limits) error 
 		return err
 	}
 	if p.PrevKey != "" && p.DeletePrevious {
-		if err := deletePaste(ctx, tx, p.PrevKey, now); err != nil {
+		if _, err := deletePaste(ctx, tx, p.PrevKey, now); err != nil {
 			return err
 		}
 	}
@@ -250,7 +253,8 @@ type ListQuery struct {
 }
 
 // Sorts are the orders a list can have: a field, with "-" in front for
-// the largest or newest first
+// the largest or newest first. Each has an index on (user_id, field, ...)
+// so a page is read in index order, see migration 0004_indexes.sql.
 var Sorts = map[string]string{
 	"-created":     "pastes.created_at DESC, pastes.key DESC",
 	"created":      "pastes.created_at ASC, pastes.key ASC",
@@ -268,14 +272,46 @@ var Sorts = map[string]string{
 var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 // ListPastes returns one page of the pastes of a user that match q, and how
-// many match in all
+// many match in all. It reads on L within ListTimeout: a search walks all
+// of a user's pastes, so it must never hold the connections the access
+// gate and the logins read on.
 func (db *DB) ListPastes(ctx context.Context, userID int64, q ListQuery) ([]*Paste, int64, error) {
+	ctx, cancel := listContext(ctx)
+	defer cancel()
+	count, page, args := listSQL(userID, q)
+	var total int64
+	if err := db.L.QueryRowContext(ctx, count, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	perPage := max(q.PerPage, 1)
+	offset := (max(q.Page, 1) - 1) * perPage
+	rows, err := db.L.QueryContext(ctx, page, append(args, perPage, offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	list := []*Paste{}
+	for rows.Next() {
+		p, err := scanPaste(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		list = append(list, p)
+	}
+	return list, total, rows.Err()
+}
+
+// listSQL builds the queries of ListPastes: the count, and the page, which
+// takes args then LIMIT and OFFSET. The page is picked on the bare rows
+// first, in the order of an index; the columns that cost a lookup each, the
+// newer version and the tags, are read for that page alone.
+func listSQL(userID int64, q ListQuery) (count, page string, args []any) {
 	order, ok := Sorts[q.Sort]
 	if !ok {
 		order = Sorts["-created"]
 	}
 	where := []string{"pastes.user_id = ?"}
-	args := []any{userID}
+	args = []any{userID}
 	if q.Q != "" {
 		pattern := "%" + likeEscaper.Replace(q.Q) + "%"
 		where = append(where, `(pastes.title LIKE ? ESCAPE '\' OR pastes.key LIKE ? ESCAPE '\' OR pastes.language LIKE ? ESCAPE '\')`)
@@ -301,51 +337,20 @@ func (db *DB) ListPastes(ctx context.Context, userID int64, q ListQuery) ([]*Pas
 		where = append(where, versions)
 	}
 	cond := strings.Join(where, " AND ")
-
-	var total int64
-	if err := db.R.QueryRowContext(ctx, "SELECT COUNT(*) FROM pastes WHERE "+cond, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-	perPage := max(q.PerPage, 1)
-	offset := (max(q.Page, 1) - 1) * perPage
-	rows, err := db.R.QueryContext(ctx, "SELECT "+pasteColumns+" FROM pastes WHERE "+cond+" ORDER BY "+order+" LIMIT ? OFFSET ?",
-		append(args, perPage, offset)...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	list := []*Paste{}
-	for rows.Next() {
-		p, err := scanPaste(rows)
-		if err != nil {
-			return nil, 0, err
-		}
-		list = append(list, p)
-	}
-	return list, total, rows.Err()
+	count = "SELECT COUNT(*) FROM pastes WHERE " + cond
+	page = "SELECT " + pasteColumns +
+		" FROM (SELECT key AS page_key FROM pastes WHERE " + cond + " ORDER BY " + order + " LIMIT ? OFFSET ?) page" +
+		" JOIN pastes ON pastes.key = page.page_key ORDER BY " + order
+	return count, page, args
 }
 
 // EachPaste calls fn for every paste of a user, ordered by key, reading
-// pageSize rows at a time so no connection is held while fn runs
+// pageSize rows at a time so no connection is held while fn runs. Each
+// page is a costly read on L, see ListPastes.
 func (db *DB) EachPaste(ctx context.Context, userID int64, pageSize int, fn func(*Paste) error) error {
 	after := ""
 	for {
-		rows, err := db.R.QueryContext(ctx,
-			"SELECT "+pasteColumns+" FROM pastes WHERE user_id = ? AND key > ? ORDER BY key LIMIT ?", userID, after, pageSize)
-		if err != nil {
-			return err
-		}
-		var page []*Paste
-		for rows.Next() {
-			p, err := scanPaste(rows)
-			if err != nil {
-				rows.Close()
-				return err
-			}
-			page = append(page, p)
-		}
-		err = rows.Err()
-		rows.Close()
+		page, err := db.pasteAfter(ctx, userID, after, pageSize)
 		if err != nil {
 			return err
 		}
@@ -359,6 +364,27 @@ func (db *DB) EachPaste(ctx context.Context, userID int64, pageSize int, fn func
 		}
 		after = page[len(page)-1].Key
 	}
+}
+
+// pasteAfter reads the next page of EachPaste
+func (db *DB) pasteAfter(ctx context.Context, userID int64, after string, pageSize int) ([]*Paste, error) {
+	ctx, cancel := listContext(ctx)
+	defer cancel()
+	rows, err := db.L.QueryContext(ctx,
+		"SELECT "+pasteColumns+" FROM pastes WHERE user_id = ? AND key > ? ORDER BY key LIMIT ?", userID, after, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var page []*Paste
+	for rows.Next() {
+		p, err := scanPaste(rows)
+		if err != nil {
+			return nil, err
+		}
+		page = append(page, p)
+	}
+	return page, rows.Err()
 }
 
 // Revision is an older content of a paste
@@ -502,7 +528,7 @@ func (db *DB) DeletePastes(ctx context.Context, userID int64, keys []string) (de
 			notFound = append(notFound, key)
 			continue
 		}
-		if err := deletePaste(ctx, tx, key, now); err != nil {
+		if _, err := deletePaste(ctx, tx, key, now); err != nil {
 			return nil, nil, err
 		}
 		deleted = append(deleted, key)
@@ -517,9 +543,11 @@ type TagCount struct {
 }
 
 // Tags returns the tags of a user's pastes with their counts, the most used
-// first, at most limit
+// first, at most limit. It is a costly read on L, see ListPastes.
 func (db *DB) Tags(ctx context.Context, userID int64, limit int) ([]TagCount, error) {
-	rows, err := db.R.QueryContext(ctx,
+	ctx, cancel := listContext(ctx)
+	defer cancel()
+	rows, err := db.L.QueryContext(ctx,
 		`SELECT t.tag, COUNT(*) AS n FROM paste_tags t JOIN pastes p ON p.key = t.paste_key
 		WHERE p.user_id = ? GROUP BY t.tag ORDER BY n DESC, t.tag LIMIT ?`, userID, limit)
 	if err != nil {
@@ -537,9 +565,12 @@ func (db *DB) Tags(ctx context.Context, userID int64, limit int) ([]TagCount, er
 	return list, rows.Err()
 }
 
-// Languages returns the languages set on a user's pastes, at most limit
+// Languages returns the languages set on a user's pastes, at most limit.
+// It is a costly read on L, see ListPastes.
 func (db *DB) Languages(ctx context.Context, userID int64, limit int) ([]string, error) {
-	rows, err := db.R.QueryContext(ctx,
+	ctx, cancel := listContext(ctx)
+	defer cancel()
+	rows, err := db.L.QueryContext(ctx,
 		"SELECT DISTINCT language FROM pastes WHERE user_id = ? AND language != '' ORDER BY language LIMIT ?", userID, limit)
 	if err != nil {
 		return nil, err
@@ -586,9 +617,9 @@ func (db *DB) SetDefaultVisibility(ctx context.Context, userID int64, visibility
 	return nil
 }
 
-// DeleteUser deletes an account in one transaction: its sessions, tokens
-// and paste rows, with every store key of its pastes and revisions queued
-// for deletion. It records the deletion in the audit log and returns how
+// DeleteUser deletes an account: its sessions, tokens and paste rows, with
+// every store key of its pastes and revisions queued for deletion, in short
+// transactions, see DeleteUserBy. It records the deletion in the audit log and returns how
 // many store keys it queued.
 func (db *DB) DeleteUser(ctx context.Context, user *User) (int64, error) {
 	return db.DeleteUserBy(ctx, user, AuditEntry{
@@ -596,44 +627,141 @@ func (db *DB) DeleteUser(ctx context.Context, user *User) (int64, error) {
 	})
 }
 
+// deleteUserChunk is how many pastes one transaction of DeleteUserBy
+// deletes. A transaction is linear in its pastes; chunks keep each one short
+// whatever USER_MAX_PASTES allows, so other writers never wait past
+// busy_timeout.
+var deleteUserChunk = 250
+
+// deleteUserChunkDone, when set, is called after each chunk of
+// DeleteUserBy commits, with how many pastes it deleted. Tests set it.
+var deleteUserChunkDone func(deleted int)
+
 // DeleteUserBy is DeleteUser with the audit row given: an admin deleting
-// someone else's account
+// someone else's account. It runs in steps, each its own short transaction:
+// first the sessions and tokens go, so nothing adds a paste meanwhile; then
+// the pastes, deleteUserChunk at a time, each through deletePaste, so its
+// key reads as missing from the moment its row is gone; last the user row
+// with whatever pastes are left and the audit row. When a step fails the
+// account is still there, logged out, with the pastes not deleted yet; the
+// same call finishes it.
 func (db *DB) DeleteUserBy(ctx context.Context, user *User, entry AuditEntry) (int64, error) {
+	if err := db.revokeAll(ctx, user.ID); err != nil {
+		return 0, err
+	}
+	var queued int64
+	for {
+		n, q, err := db.deleteUserPastes(ctx, user.ID)
+		queued += q
+		if err != nil {
+			return queued, err
+		}
+		if deleteUserChunkDone != nil {
+			deleteUserChunkDone(n)
+		}
+		if n < deleteUserChunk {
+			break
+		}
+	}
+
 	tx, err := db.W.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return queued, err
 	}
 	defer tx.Rollback()
-
-	now := unix(db.now())
-	var queued int64
-	for _, query := range []string{
-		`INSERT INTO delete_queue (store_key, enqueued_at)
-		SELECT r.store_key, ? FROM paste_revisions r JOIN pastes p ON p.key = r.paste_key WHERE p.user_id = ?
-		ON CONFLICT (store_key) DO NOTHING`,
-		`INSERT INTO delete_queue (store_key, enqueued_at) SELECT key, ? FROM pastes WHERE user_id = ?
-		ON CONFLICT (store_key) DO NOTHING`,
-	} {
-		res, err := tx.ExecContext(ctx, query, now, user.ID)
-		if err != nil {
-			return 0, err
-		}
-		n, _ := res.RowsAffected()
-		queued += n
-	}
-	// Tags and revisions go with their pastes; sessions and tokens with the user
-	if _, err := tx.ExecContext(ctx, "DELETE FROM pastes WHERE user_id = ?", user.ID); err != nil {
-		return 0, err
+	// A paste recorded by an upload that passed its checks before the
+	// tokens went; normally none
+	_, q, err := deletePastesOf(ctx, tx, user.ID, -1, unix(db.now()))
+	if err != nil {
+		return queued, err
 	}
 	res, err := tx.ExecContext(ctx, "DELETE FROM users WHERE id = ?", user.ID)
 	if err != nil {
-		return 0, err
+		return queued, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return 0, ErrNotFound
+		return queued, ErrNotFound
 	}
 	if err := audit(ctx, tx, db.now(), entry); err != nil {
-		return 0, err
+		return queued, err
 	}
-	return queued, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return queued, err
+	}
+	return queued + q, nil
+}
+
+// revokeAll deletes the sessions and tokens of a user. A user that does not
+// exist is ErrNotFound.
+func (db *DB) revokeAll(ctx context.Context, userID int64) error {
+	tx, err := db.W.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE id = ?", userID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return ErrNotFound
+	}
+	for _, query := range []string{"DELETE FROM sessions WHERE user_id = ?", "DELETE FROM api_tokens WHERE user_id = ?"} {
+		if _, err := tx.ExecContext(ctx, query, userID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// deleteUserPastes deletes up to deleteUserChunk pastes of a user in one
+// transaction. It returns how many it deleted and how many store keys it
+// queued.
+func (db *DB) deleteUserPastes(ctx context.Context, userID int64) (int, int64, error) {
+	tx, err := db.W.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	n, queued, err := deletePastesOf(ctx, tx, userID, deleteUserChunk, unix(db.now()))
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return n, queued, nil
+}
+
+// deletePastesOf deletes up to limit pastes of a user inside tx, all of
+// them when limit is negative, each through deletePaste. It returns how
+// many it deleted and how many store keys it queued.
+func deletePastesOf(ctx context.Context, tx *sql.Tx, userID int64, limit int, now int64) (int, int64, error) {
+	rows, err := tx.QueryContext(ctx, "SELECT key FROM pastes WHERE user_id = ? LIMIT ?", userID, limit)
+	if err != nil {
+		return 0, 0, err
+	}
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		keys = append(keys, key)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return 0, 0, err
+	}
+	var queued int64
+	for _, key := range keys {
+		q, err := deletePaste(ctx, tx, key, now)
+		if err != nil {
+			return 0, 0, err
+		}
+		queued += q
+	}
+	return len(keys), queued, nil
 }

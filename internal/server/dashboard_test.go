@@ -20,6 +20,7 @@ import (
 	"github.com/armbian/ansi-hastebin/config"
 	"github.com/armbian/ansi-hastebin/internal/accounts"
 	"github.com/armbian/ansi-hastebin/internal/auth"
+	"github.com/armbian/ansi-hastebin/internal/dashboard"
 	"github.com/armbian/ansi-hastebin/internal/keygenerator"
 	"github.com/armbian/ansi-hastebin/internal/storage"
 	"github.com/go-chi/chi/v5/middleware"
@@ -221,10 +222,18 @@ func TestTokenUploadsAreOwned(t *testing.T) {
 	}
 	require.Zero(t, d.owner(key))
 
-	// Paste headers of an anonymous upload are ignored, even invalid ones
-	rec, key = d.upload("anon", nil, "X-Paste-Visibility", "nonsense")
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Zero(t, d.owner(key))
+	// Paste headers without a token or login are 401, never an anonymous
+	// public paste in place of the one asked for
+	files = d.files()
+	for _, h := range [][]string{{"X-Paste-Visibility", "private"}, {"X-Paste-Visibility", "nonsense"}, {"X-Paste-Title", "t"},
+		{"X-Paste-Tags", "a"}, {"X-Paste-Expires", "2030-01-02T15:04:05Z"}, {"X-Paste-Language", "go"}} {
+		rec, _ = d.upload("anon", nil, h...)
+		require.Equal(t, http.StatusUnauthorized, rec.Code, h)
+		require.Equal(t, "unauthenticated", decode[map[string]string](t, rec)["error"])
+		rec = d.do(http.MethodPost, "/documents", strings.NewReader("anon"), nil, h...)
+		require.Equal(t, http.StatusUnauthorized, rec.Code, h)
+	}
+	require.Equal(t, files, d.files(), "nothing stored")
 
 	// Invalid paste headers on an owned upload: 400 and nothing stored
 	files = d.files()
@@ -253,28 +262,121 @@ func TestCookieUploadsNeedCSRF(t *testing.T) {
 	alice := loginAs(t, d.db, 21, "alice")
 	aliceID := d.userID(21)
 
-	// Without the CSRF token, or with a wrong one, or cross-site: anonymous as before
+	// Without the CSRF token: anonymous as before
+	rec := d.do(http.MethodPost, "/documents", strings.NewReader("web"), alice)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Zero(t, d.owner(decode[map[string]string](t, rec)["key"]))
+
+	// With a wrong one, or cross-site: 401 and nothing stored, never anonymous
+	files := d.files()
 	for _, headers := range [][]string{
-		nil,
 		{"X-CSRF-Token", base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("x", 32)))},
 		{"X-CSRF-Token", zeroCSRF, "Origin", "https://evil.example"},
 		{"X-CSRF-Token", zeroCSRF, "Sec-Fetch-Site", "cross-site"},
 	} {
 		rec := d.do(http.MethodPost, "/documents", strings.NewReader("web"), alice, headers...)
-		require.Equal(t, http.StatusOK, rec.Code)
-		require.Zero(t, d.owner(decode[map[string]string](t, rec)["key"]), headers)
+		require.Equal(t, http.StatusUnauthorized, rec.Code, headers)
+		require.Equal(t, "session_expired", decode[map[string]string](t, rec)["error"])
 	}
+	require.Equal(t, files, d.files(), "nothing stored")
 
 	// With it the paste is the user's, with the default visibility
 	_, err := d.db.W.Exec("UPDATE users SET default_visibility = 1 WHERE id = ?", aliceID)
 	require.NoError(t, err)
-	rec := d.do(http.MethodPost, "/documents", strings.NewReader("web"), alice,
+	rec = d.do(http.MethodPost, "/documents", strings.NewReader("web"), alice,
 		"X-CSRF-Token", zeroCSRF, "Origin", "http://localhost:7777", "Content-Type", "text/plain; charset=utf-8")
 	require.Equal(t, http.StatusOK, rec.Code)
 	key := decode[map[string]string](t, rec)["key"]
 	p, err := d.db.PasteByKey(context.Background(), aliceID, key)
 	require.NoError(t, err)
 	require.Equal(t, accounts.VisibilityPrivate, p.Visibility)
+}
+
+// TestStaleSessionUploadNeverAnonymous is the audit repro: a page logged
+// out in another tab, or past its session, still sends its cookie and CSRF
+// token with X-Paste-Visibility: private. The upload must be 401 with
+// nothing stored, on /documents and /log, and never readable anonymously.
+// Without any of those headers the cookie alone stays anonymous, as in v1.1.0.
+func TestStaleSessionUploadNeverAnonymous(t *testing.T) {
+	d := newDash(t, nil)
+	alice := loginAs(t, d.db, 22, "alice")
+	aliceID := d.userID(22)
+	_, err := d.db.W.Exec("UPDATE users SET default_visibility = 1 WHERE id = ?", aliceID)
+	require.NoError(t, err)
+	// Logged out elsewhere: the session row is gone, the browser keeps the cookie
+	_, err = d.db.W.Exec("DELETE FROM sessions WHERE user_id = ?", aliceID)
+	require.NoError(t, err)
+
+	files := d.files()
+	for _, path := range []string{"/documents", "/log"} {
+		for _, method := range []string{http.MethodPost, http.MethodPut} {
+			if path == "/documents" && method == http.MethodPut {
+				continue
+			}
+			for _, headers := range [][]string{
+				{"X-CSRF-Token", zeroCSRF, "Origin", "http://localhost:7777", "X-Paste-Visibility", "private"},
+				{"X-CSRF-Token", zeroCSRF, "Origin", "http://localhost:7777"},
+				{"X-CSRF-Token", zeroCSRF, "X-Paste-Language", "go"},
+			} {
+				rec := d.do(method, path, strings.NewReader("secret"), alice, headers...)
+				require.Equal(t, http.StatusUnauthorized, rec.Code, path, headers)
+				require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+				out := decode[map[string]string](t, rec)
+				require.Equal(t, "session_expired", out["error"])
+				require.NotEmpty(t, out["message"])
+			}
+		}
+	}
+	require.Equal(t, files, d.files(), "nothing stored")
+
+	// The cookie alone, with none of those headers, is anonymous as before
+	rec := d.do(http.MethodPost, "/documents", strings.NewReader("plain"), alice)
+	require.Equal(t, http.StatusOK, rec.Code)
+	key := decode[map[string]string](t, rec)["key"]
+	require.Zero(t, d.owner(key))
+	require.Equal(t, http.StatusOK, d.do(http.MethodGet, "/raw/"+key, nil, nil).Code)
+}
+
+// TestOwnedUploadRateLimit: owned uploads to /documents and /log count per
+// account, whatever token or address they come from; past the limit 429
+// with Retry-After and nothing stored. Anonymous uploads are not counted.
+func TestOwnedUploadRateLimit(t *testing.T) {
+	d := newDash(t, nil)
+	alice := loginAs(t, d.db, 23, "alice")
+	token, _ := d.newToken(alice, "ci")
+	other, _ := d.newToken(alice, "laptop")
+
+	for i := range dashboard.UploadLimit {
+		tok, path, remote := token, "/log", "198.51.100.7:1"
+		if i%2 == 1 {
+			tok, path, remote = other, "/documents", fmt.Sprintf("203.0.113.%d:1", i%200+1)
+		}
+		method := http.MethodPut
+		if path == "/documents" {
+			method = http.MethodPost
+		}
+		rec := d.do(method, path, strings.NewReader("x"), nil, "Authorization", "Bearer "+tok, "X-Test-Remote", remote)
+		require.Equal(t, http.StatusOK, rec.Code, i)
+	}
+	files := d.files()
+	for _, path := range []string{"/log", "/documents"} {
+		rec := d.do(http.MethodPost, path, strings.NewReader("x"), nil, "Authorization", "Bearer "+other, "X-Test-Remote", "192.0.2.9:1")
+		require.Equal(t, http.StatusTooManyRequests, rec.Code, path)
+		require.Equal(t, "60", rec.Header().Get("Retry-After"))
+		require.Contains(t, rec.Body.String(), `"message"`)
+	}
+	// The session counts against the same account
+	rec := d.do(http.MethodPost, "/documents", strings.NewReader("x"), alice, "X-CSRF-Token", zeroCSRF, "Origin", "http://localhost:7777")
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Equal(t, files, d.files(), "nothing stored")
+
+	// Anonymous uploads and other accounts are not held back
+	rec = d.do(http.MethodPost, "/documents", strings.NewReader("anon"), nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	bob := loginAs(t, d.db, 24, "bob")
+	bobToken, _ := d.newToken(bob, "ci")
+	rec = d.do(http.MethodPost, "/documents", strings.NewReader("bob"), nil, "Authorization", "Bearer "+bobToken)
+	require.Equal(t, http.StatusOK, rec.Code)
 }
 
 // revokeAtEOF is an upload body that runs a function when it is read to the end

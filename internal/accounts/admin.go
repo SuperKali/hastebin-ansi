@@ -83,7 +83,7 @@ func (db *DB) RemovePaste(ctx context.Context, key string, abuse bool, reason st
 		return nil, err
 	default:
 		m.OwnerID, m.Visibility = owner.Int64, int(visibility.Int64)
-		if err := deletePaste(ctx, tx, key, now); err != nil {
+		if _, err := deletePaste(ctx, tx, key, now); err != nil {
 			return nil, err
 		}
 	}
@@ -205,8 +205,11 @@ const userUsage = `(SELECT COUNT(*) FROM pastes p WHERE p.user_id = users.id) AS
 	(SELECT COALESCE(SUM(p.size), 0) FROM pastes p WHERE p.user_id = users.id) +
 	(SELECT COALESCE(SUM(r.size), 0) FROM paste_revisions r JOIN pastes p ON p.key = r.paste_key WHERE p.user_id = users.id) AS n_bytes`
 
-// ListUsers returns one page of the accounts that match q, and how many match in all
+// ListUsers returns one page of the accounts that match q, and how many
+// match in all. It is a costly read on L, see ListPastes.
 func (db *DB) ListUsers(ctx context.Context, q UserQuery) ([]UserRow, int64, error) {
+	ctx, cancel := listContext(ctx)
+	defer cancel()
 	order, ok := UserSort[q.Sort]
 	if !ok {
 		order = UserSort["created"]
@@ -221,12 +224,12 @@ func (db *DB) ListUsers(ctx context.Context, q UserQuery) ([]UserRow, int64, err
 		}
 	}
 	var total int64
-	if err := db.R.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE "+cond, args...).Scan(&total); err != nil {
+	if err := db.L.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE "+cond, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	perPage := max(q.PerPage, 1)
 	offset := (max(q.Page, 1) - 1) * perPage
-	rows, err := db.R.QueryContext(ctx,
+	rows, err := db.L.QueryContext(ctx,
 		"SELECT "+userColumns+", "+userUsage+" FROM users WHERE "+cond+" ORDER BY "+order+" LIMIT ? OFFSET ?",
 		append(args, perPage, offset)...)
 	if err != nil {

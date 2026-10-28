@@ -316,6 +316,72 @@ body.has-large-notice {
     padding-bottom: 72px;
 }
 
+/* Save refused because the login ended: two ways on, nothing saved yet */
+
+#login-ended {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1600;
+    padding: 12px 16px;
+    background: #073642;
+    border-top: 2px solid #cb4b16;
+    color: #c4dce3;
+    font-family: Helvetica, sans-serif;
+    font-size: 13px;
+    line-height: 18px;
+}
+
+#login-ended[hidden] {
+    display: none;
+}
+
+#login-ended p {
+    margin: 0 0 10px;
+}
+
+#login-ended strong {
+    color: #fff;
+}
+
+.login-ended-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.login-ended-actions button {
+    min-height: 32px;
+    padding: 6px 12px;
+    border: 1px solid #2aa198;
+    border-radius: 4px;
+    background: transparent;
+    color: #c4dce3;
+    font: inherit;
+    cursor: pointer;
+}
+
+.login-ended-actions .login-ended-signin {
+    background: #2aa198;
+    color: #002b36;
+    font-weight: bold;
+}
+
+.login-ended-actions .login-ended-close {
+    border-color: transparent;
+}
+
+.login-ended-actions button:hover,
+.login-ended-actions button:focus-visible {
+    border-color: #fff;
+    outline: none;
+}
+
+body.has-login-ended {
+    padding-bottom: 110px;
+}
+
 /* AI / MCP panel */
 
 body.mcp-open {

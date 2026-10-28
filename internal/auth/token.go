@@ -171,27 +171,38 @@ func (s *Service) ClearSession(w http.ResponseWriter) {
 	http.SetCookie(w, s.cookie(sessionCookie, "", -1))
 }
 
+// ErrSessionExpired is returned by UploadSession for an upload that sends
+// X-CSRF-Token, so it was meant to be owned, without a session that
+// resolves: the cookie is missing or ended, or the token is not its own
+var ErrSessionExpired = errors.New("session expired")
+
 // UploadSession returns the principal of the session cookie of an upload,
 // but only when the request also passes the CSRF check: X-CSRF-Token
 // holds the session's token, Origin, when sent, is this server, and the
-// request is not cross-site. The body may be anything. Otherwise the
-// upload is anonymous, as it always was, and nil comes back.
+// request is not cross-site. The body may be anything. Without
+// X-CSRF-Token the upload is anonymous, as it always was, and nil comes
+// back even with a cookie. With it, an upload that does not pass is
+// ErrSessionExpired, never anonymous: the page that sent it thinks it is
+// logged in, and may have asked for a private paste.
 func (s *Service) UploadSession(r *http.Request) (*Principal, error) {
 	if r.Header.Get("X-CSRF-Token") == "" {
 		return nil, nil
 	}
 	p, err := s.Session(r)
-	if err != nil || p == nil {
+	if err != nil {
 		return nil, err
 	}
+	if p == nil {
+		return nil, ErrSessionExpired
+	}
 	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-		return nil, nil
+		return nil, ErrSessionExpired
 	}
 	if origin := r.Header.Get("Origin"); origin != "" && !s.sameOrigin(r, origin) {
-		return nil, nil
+		return nil, ErrSessionExpired
 	}
 	if !p.ValidCSRF(r.Header.Get("X-CSRF-Token")) {
-		return nil, nil
+		return nil, ErrSessionExpired
 	}
 	return p, nil
 }

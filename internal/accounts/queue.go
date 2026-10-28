@@ -14,9 +14,10 @@ type QueueItem struct {
 }
 
 // QueueBatch returns up to limit store keys waiting to be deleted, those
-// tried least often and longest waiting first
+// tried least often and longest waiting first. It reads on R: the writer
+// stays free for the requests.
 func (db *DB) QueueBatch(ctx context.Context, limit int) ([]QueueItem, error) {
-	rows, err := db.W.QueryContext(ctx,
+	rows, err := db.R.QueryContext(ctx,
 		"SELECT store_key, attempts FROM delete_queue ORDER BY attempts, enqueued_at, store_key LIMIT ?", limit)
 	if err != nil {
 		return nil, err
@@ -33,16 +34,41 @@ func (db *DB) QueueBatch(ctx context.Context, limit int) ([]QueueItem, error) {
 	return list, rows.Err()
 }
 
-// QueueDone removes a deleted store key from the queue
-func (db *DB) QueueDone(ctx context.Context, storeKey string) error {
-	_, err := db.W.ExecContext(ctx, "DELETE FROM delete_queue WHERE store_key = ?", storeKey)
-	return err
-}
-
-// QueueFailed counts a failed attempt to delete a store key; it stays queued
-func (db *DB) QueueFailed(ctx context.Context, storeKey string) error {
-	_, err := db.W.ExecContext(ctx, "UPDATE delete_queue SET attempts = attempts + 1 WHERE store_key = ?", storeKey)
-	return err
+// QueueSettle records the outcome of one pass in one transaction: the
+// store keys in done were deleted and leave the queue, those in failed
+// count one more attempt and stay queued
+func (db *DB) QueueSettle(ctx context.Context, done, failed []string) error {
+	if len(done) == 0 && len(failed) == 0 {
+		return nil
+	}
+	tx, err := db.W.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []struct {
+		query string
+		keys  []string
+	}{
+		{"DELETE FROM delete_queue WHERE store_key = ?", done},
+		{"UPDATE delete_queue SET attempts = attempts + 1 WHERE store_key = ?", failed},
+	} {
+		if len(q.keys) == 0 {
+			continue
+		}
+		stmt, err := tx.PrepareContext(ctx, q.query)
+		if err != nil {
+			return err
+		}
+		for _, key := range q.keys {
+			if _, err := stmt.ExecContext(ctx, key); err != nil {
+				stmt.Close()
+				return err
+			}
+		}
+		stmt.Close()
+	}
+	return tx.Commit()
 }
 
 // QueueLen returns how many store keys wait to be deleted
@@ -118,31 +144,30 @@ func (d *Drainer) Drain(ctx context.Context) int {
 			}
 			return total
 		}
-		done, failed := 0, 0
+		var done, failed []string
 		for _, item := range batch {
 			if failedNow[item.StoreKey] {
 				continue
 			}
 			if err := d.Delete(item.StoreKey); err != nil {
 				failedNow[item.StoreKey] = true
-				failed++
-				if err := d.DB.QueueFailed(ctx, item.StoreKey); err != nil {
-					log.Warn().Err(err).Msg("Failed to record a failed delete")
-				}
+				failed = append(failed, item.StoreKey)
 				continue
 			}
-			if err := d.DB.QueueDone(ctx, item.StoreKey); err != nil {
-				log.Warn().Err(err).Msg("Failed to remove a deleted key from the queue")
-				continue
-			}
-			done++
+			done = append(done, item.StoreKey)
 		}
-		total += done
-		if failed > 0 {
-			log.Warn().Int("failed", failed).Int("deleted", done).Msg("Some pastes could not be deleted from the store, retrying later")
+		// One write for the whole pass. Should it fail, the deleted keys
+		// stay queued and hidden; deleting them again is harmless.
+		if err := d.DB.QueueSettle(ctx, done, failed); err != nil {
+			log.Warn().Err(err).Msg("Failed to record a pass of the delete queue")
+			return total
+		}
+		total += len(done)
+		if len(failed) > 0 {
+			log.Warn().Int("failed", len(failed)).Int("deleted", len(done)).Msg("Some pastes could not be deleted from the store, retrying later")
 		}
 		// A full batch that made progress may have more behind it
-		if len(batch) < DrainBatch || done == 0 {
+		if len(batch) < DrainBatch || len(done) == 0 {
 			return total
 		}
 	}

@@ -30,6 +30,17 @@ const FileMode = 0o600
 // through one connection, so they never wait on each other inside SQLite.
 const readers = 4
 
+// listReaders is how many connections the costly reads may hold: the
+// dashboard list and search, tags, export and the admin lists. They have
+// their own pool, so however many run at once, the access gate and the
+// session and token checks on R always find a connection.
+const listReaders = 2
+
+// ListTimeout bounds one costly read, waiting for a connection included.
+// Past it the query is interrupted and the caller gets
+// context.DeadlineExceeded.
+const ListTimeout = 3 * time.Second
+
 // pragmas are set on every connection. busy_timeout comes first, so the
 // switch to WAL waits for a busy database too. cache_size -8000 is 8 MiB per
 // connection, outside memory_budget.
@@ -50,8 +61,10 @@ type DB struct {
 	path string
 
 	// W writes, one statement or transaction at a time. R only reads.
+	// L only reads too, for the costly reads; see listReaders.
 	W *sql.DB
 	R *sql.DB
+	L *sql.DB
 
 	// now is the clock, replaced in tests
 	now func() time.Time
@@ -119,7 +132,16 @@ func open(path string, create bool) (*DB, error) {
 	r.SetMaxOpenConns(readers)
 	r.SetMaxIdleConns(readers)
 
-	db := &DB{path: path, W: w, R: r, now: time.Now}
+	l, err := sql.Open("sqlite", dsn(path, "_pragma=query_only(1)"))
+	if err != nil {
+		w.Close()
+		r.Close()
+		return nil, err
+	}
+	l.SetMaxOpenConns(listReaders)
+	l.SetMaxIdleConns(listReaders)
+
+	db := &DB{path: path, W: w, R: r, L: l, now: time.Now}
 	if err := w.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("opening the accounts database: %w", err)
@@ -151,9 +173,14 @@ func (db *DB) Path() string {
 	return db.path
 }
 
-// Close closes both handles
+// Close closes the handles
 func (db *DB) Close() error {
-	return errors.Join(db.R.Close(), db.W.Close())
+	return errors.Join(db.L.Close(), db.R.Close(), db.W.Close())
+}
+
+// listContext bounds a costly read on L, see ListTimeout
+func listContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, ListTimeout)
 }
 
 // migration is one embedded schema change, numbered by its file name
@@ -205,13 +232,30 @@ func SchemaVersion() int {
 }
 
 // migrate applies the migrations the database does not have yet, all in one
-// transaction, and records the version in PRAGMA user_version
-func (db *DB) migrate(ctx context.Context) error {
+// transaction, and records the version in PRAGMA user_version. A migration
+// may rebuild a table others point at, as SQLite documents it: foreign keys
+// are off while the transaction runs (the pragma does nothing inside one)
+// and foreign_key_check must find nothing before it commits.
+func (db *DB) migrate(ctx context.Context) (err error) {
 	list, err := migrations()
 	if err != nil {
 		return err
 	}
-	tx, err := db.W.BeginTx(ctx, nil)
+	conn, err := db.W.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("starting the accounts schema update: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("starting the accounts schema update: %w", err)
+	}
+	defer func() {
+		// W has this one connection: it must not stay without foreign keys
+		if _, onErr := conn.ExecContext(context.Background(), "PRAGMA foreign_keys = ON"); onErr != nil && err == nil {
+			err = fmt.Errorf("finishing the accounts schema update: %w", onErr)
+		}
+	}()
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("starting the accounts schema update: %w", err)
 	}
@@ -234,6 +278,9 @@ func (db *DB) migrate(ctx context.Context) error {
 			return fmt.Errorf("accounts schema update %s: %w", m.name, err)
 		}
 	}
+	if err := foreignKeyCheck(ctx, tx); err != nil {
+		return fmt.Errorf("accounts schema update: %w", err)
+	}
 	// PRAGMA takes no bound parameters; newest is a number from this binary
 	if _, err := tx.ExecContext(ctx, "PRAGMA user_version = "+strconv.Itoa(newest)); err != nil {
 		return fmt.Errorf("recording the accounts schema version: %w", err)
@@ -242,6 +289,26 @@ func (db *DB) migrate(ctx context.Context) error {
 		return fmt.Errorf("committing the accounts schema update: %w", err)
 	}
 	return nil
+}
+
+// foreignKeyCheck returns an error naming the first row whose foreign key
+// points at nothing
+func foreignKeyCheck(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var table, parent string
+		var rowid sql.NullInt64
+		var fk int64
+		if err := rows.Scan(&table, &rowid, &parent, &fk); err != nil {
+			return err
+		}
+		return fmt.Errorf("a row of %s points at a missing row of %s", table, parent)
+	}
+	return rows.Err()
 }
 
 // UserVersion returns the schema version recorded in the database
@@ -278,20 +345,26 @@ func Backup(ctx context.Context, path, out string) error {
 }
 
 // sqliteBusy and sqliteLocked are the primary SQLite result codes of a
-// database that stayed locked past busy_timeout
+// database that stayed locked past busy_timeout, sqliteInterrupt of a
+// query stopped when its context ended
 const (
-	sqliteBusy   = 5
-	sqliteLocked = 6
+	sqliteBusy      = 5
+	sqliteLocked    = 6
+	sqliteInterrupt = 9
 )
 
-// IsBusy reports whether err means the database stayed locked past the busy timeout
+// IsBusy reports whether err means the database stayed locked past the busy
+// timeout, or a query ran out of time: ListTimeout or another deadline
 func IsBusy(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
 	var e *sqlite.Error
 	if !errors.As(err, &e) {
 		return false
 	}
 	code := e.Code() & 0xff
-	return code == sqliteBusy || code == sqliteLocked
+	return code == sqliteBusy || code == sqliteLocked || code == sqliteInterrupt
 }
 
 // unix returns t as Unix seconds

@@ -97,8 +97,10 @@ haste_document.prototype.load = function (key, callback, lang) {
     });
 };
 
-// Save this document to the server and lock it here
-haste_document.prototype.save = function (data, callback) {
+// Save this document to the server and lock it here. With anonymous the
+// paste is sent without the CSRF token and the X-Paste-* headers: an
+// anonymous public paste, which the person chose after a 401.
+haste_document.prototype.save = function (data, callback, anonymous) {
     if (this.locked) {
         return false;
     }
@@ -109,8 +111,9 @@ haste_document.prototype.save = function (data, callback) {
     var high = preview === null ? hljs.highlightAuto(data) : {value: _this.htmlEscape(preview)};
     // Logged in, the CSRF token makes the paste yours; without it the paste is anonymous.
     // An owned paste keeps the language its link gets, for the dashboard.
-    var headers = haste_document.csrf ? {'X-CSRF-Token': haste_document.csrf} : {};
-    if (haste_document.csrf && /^[a-z0-9][a-z0-9+#._-]{0,31}$/.test(high.language || '')) {
+    var owned = haste_document.csrf && !anonymous;
+    var headers = owned ? {'X-CSRF-Token': haste_document.csrf} : {};
+    if (owned && /^[a-z0-9][a-z0-9+#._-]{0,31}$/.test(high.language || '')) {
         headers['X-Paste-Language'] = high.language;
     }
     $.ajax('/documents', {
@@ -123,11 +126,15 @@ haste_document.prototype.save = function (data, callback) {
                 large: preview !== null, size: data.length
             });
         }, error: function (res) {
+            var err;
             try {
-                callback(JSON.parse(res.responseText));
+                err = JSON.parse(res.responseText);
             } catch (e) {
-                callback({message: 'Something went wrong!'});
+                err = {message: 'Something went wrong!'};
             }
+            // The login ended: nothing was saved, and the text stays here
+            err.loginEnded = res.status === 401 && owned;
+            callback(err);
         }
     });
 };
@@ -302,6 +309,81 @@ haste.prototype.hideLargeNotice = function () {
     $(document.body).removeClass('has-large-notice');
 };
 
+// draftKey is where the text waits in sessionStorage while the person
+// signs in again; the page it returns to puts it back
+haste.draftKey = 'hastebin.draft';
+
+// Tell the person that saving failed because their login ended, with the
+// two ways on: sign in again and come back to this text, or save it as an
+// anonymous public paste. Nothing is saved until they choose.
+haste.prototype.showLoginEnded = function () {
+    var _this = this;
+    // The account control shows what the server thinks now
+    this.loadSession();
+    var $panel = $('#login-ended');
+    $panel.find('.login-ended-signin').off('click').on('click', function () {
+        _this.signInAgain();
+    });
+    $panel.find('.login-ended-anon').off('click').on('click', function () {
+        _this.hideLoginEnded();
+        _this.lockDocument(true);
+    });
+    $panel.find('.login-ended-close').off('click').on('click', function () {
+        _this.hideLoginEnded();
+        _this.$textarea.focus();
+    });
+    $panel.off('keydown').on('keydown', function (evt) {
+        if (evt.key === 'Escape') {
+            _this.hideLoginEnded();
+            _this.$textarea.focus();
+        }
+    });
+    $panel.prop('hidden', false);
+    $(document.body).addClass('has-login-ended');
+    $panel.find('.login-ended-signin').focus();
+};
+
+haste.prototype.hideLoginEnded = function () {
+    $('#login-ended').prop('hidden', true);
+    $(document.body).removeClass('has-login-ended');
+};
+
+// Sign in again and come back to this page with the text. The text waits in
+// sessionStorage, which only this tab sees; when the browser keeps none, the
+// sign in opens in a new tab and this one keeps the text.
+haste.prototype.signInAgain = function () {
+    var back = window.location.pathname + window.location.search;
+    var url = '/auth/github/login?return=' + encodeURIComponent(back);
+    try {
+        window.sessionStorage.setItem(haste.draftKey, this.$textarea.val());
+    } catch (e) {
+        var _this = this;
+        window.open(url, '_blank', 'noopener');
+        this.hideLoginEnded();
+        $(window).one('focus', function () {
+            _this.loadSession();
+        });
+        this.showMessage('Sign in in the new tab, then come back and press Save.');
+        return;
+    }
+    window.location.href = url;
+};
+
+// Put back the text saved by signInAgain, once, on a new document
+haste.prototype.restoreDraft = function () {
+    var draft = null;
+    try {
+        draft = window.sessionStorage.getItem(haste.draftKey);
+        window.sessionStorage.removeItem(haste.draftKey);
+    } catch (e) {
+        return;
+    }
+    if (draft && this.doc && !this.doc.locked && $.trim(this.$textarea.val()) === '') {
+        this.$textarea.val(draft).focus();
+        this.showMessage('Your text is back. Press Save to keep it.');
+    }
+};
+
 // Load a document and show it
 haste.prototype.loadDocument = function (key) {
     console.log("LOADING DOCUMENT");
@@ -354,12 +436,16 @@ haste.prototype.duplicateDocument = function () {
     });
 };
 
-// Lock the current document
-haste.prototype.lockDocument = function () {
+// Lock the current document. With anonymous it is saved as an anonymous
+// public paste even when logged in.
+haste.prototype.lockDocument = function (anonymous) {
     console.log("LOCKING DOCUMENT");
     var _this = this;
+    this.hideLoginEnded();
     this.doc.save(this.$textarea.val(), function (err, ret) {
-        if (err) {
+        if (err && err.loginEnded) {
+            _this.showLoginEnded();
+        } else if (err) {
             _this.showMessage(err.message, 'error');
         } else if (ret) {
             _this.$code.html(ret.value);

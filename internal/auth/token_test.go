@@ -176,23 +176,45 @@ func TestUploadSession(t *testing.T) {
 	id, csrf := newSecret(), newSecret()
 	require.NoError(t, db.CreateSession(ctx, hashSecret(id), user.ID, csrf, time.Now().Add(time.Hour)))
 
-	upload := func(headers ...string) *Principal {
+	send := func(cookie bool, headers ...string) (*Principal, error) {
 		r := httptest.NewRequest("POST", "/documents", strings.NewReader("x"))
-		r.AddCookie(svc.cookie(sessionCookie, encode(id), 0))
+		if cookie {
+			r.AddCookie(svc.cookie(sessionCookie, encode(id), 0))
+		}
 		for i := 0; i+1 < len(headers); i += 2 {
 			r.Header.Set(headers[i], headers[i+1])
 		}
-		p, err := svc.UploadSession(r)
+		return svc.UploadSession(r)
+	}
+	upload := func(headers ...string) *Principal {
+		p, err := send(true, headers...)
 		require.NoError(t, err)
 		return p
 	}
 	require.Nil(t, upload(), "a cookie alone is anonymous")
-	require.Nil(t, upload("X-CSRF-Token", encode(newSecret())))
-	require.Nil(t, upload("X-CSRF-Token", "garbage"))
-	require.Nil(t, upload("X-CSRF-Token", encode(csrf), "Origin", "https://evil.example"))
-	require.Nil(t, upload("X-CSRF-Token", encode(csrf), "Sec-Fetch-Site", "cross-site"))
 	p := upload("X-CSRF-Token", encode(csrf), "Origin", "https://paste.example")
 	require.NotNil(t, p)
 	require.Equal(t, user.ID, p.User.ID)
 	require.NotNil(t, upload("X-CSRF-Token", encode(csrf), "Content-Type", "text/plain"), "any body type")
+
+	// A CSRF token that does not pass is never anonymous
+	for _, headers := range [][]string{
+		{"X-CSRF-Token", encode(newSecret())},
+		{"X-CSRF-Token", "garbage"},
+		{"X-CSRF-Token", encode(csrf), "Origin", "https://evil.example"},
+		{"X-CSRF-Token", encode(csrf), "Sec-Fetch-Site", "cross-site"},
+	} {
+		p, err := send(true, headers...)
+		require.ErrorIs(t, err, ErrSessionExpired, headers)
+		require.Nil(t, p)
+	}
+	// Nor is one without its session: no cookie, or the session ended
+	_, err := send(false, "X-CSRF-Token", encode(csrf))
+	require.ErrorIs(t, err, ErrSessionExpired)
+	require.NoError(t, db.DeleteSession(ctx, hashSecret(id)))
+	_, err = send(true, "X-CSRF-Token", encode(csrf))
+	require.ErrorIs(t, err, ErrSessionExpired)
+	p, err = send(true)
+	require.NoError(t, err)
+	require.Nil(t, p, "the stale cookie alone is still anonymous")
 }

@@ -241,6 +241,15 @@ func (h *Handler) content(w http.ResponseWriter, r *http.Request) {
 		writeDBError(w, err)
 		return
 	}
+	// A paste its owner deleted is gone for admins too, while its content
+	// waits in the delete queue
+	if a, err := h.DB.AccessOf(ctx, key); err != nil {
+		writeDBError(w, err)
+		return
+	} else if a.Pending {
+		writeError(w, http.StatusNotFound, "not_found", "No paste has this key.")
+		return
+	}
 	if _, err := h.Docs.Store.Size(key); errors.Is(err, storage.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "No paste has this key.")
 		return
@@ -255,7 +264,10 @@ func (h *Handler) content(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.Gate != nil {
-		if err := h.Gate.ModeratorRead(ctx, key, admin(r).ID); err != nil {
+		if err := h.Gate.ModeratorRead(ctx, key, admin(r).ID); errors.Is(err, handler.ErrDenied) {
+			writeError(w, http.StatusNotFound, "not_found", "No paste has this key.")
+			return
+		} else if err != nil {
 			writeDBError(w, err)
 			return
 		}

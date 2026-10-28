@@ -42,9 +42,12 @@ func audit(ctx context.Context, x execer, now time.Time, entry AuditEntry) error
 	return err
 }
 
-// AuditLog returns up to limit entries, newest first, skipping offset
+// AuditLog returns up to limit entries, newest first, skipping offset. It
+// is a costly read on L, see ListPastes.
 func (db *DB) AuditLog(ctx context.Context, limit, offset int) ([]AuditEntry, error) {
-	rows, err := db.R.QueryContext(ctx,
+	ctx, cancel := listContext(ctx)
+	defer cancel()
+	rows, err := db.L.QueryContext(ctx,
 		"SELECT id, at, admin_user_id, admin_login, action, target, detail FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?",
 		limit, offset)
 	if err != nil {

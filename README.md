@@ -456,7 +456,7 @@ The same works on `POST /documents`. These optional headers describe the paste:
 | `X-Paste-Expires` | An RFC 3339 time in the future, such as `2030-01-02T15:04:05Z` |
 | `X-Paste-Language` | The language shown in the dashboard. Without it, the extension in `?ext=` (`/log?ext=py`) |
 
-They count only on uploads with a token or a login; anonymous uploads ignore them. A value the server does not accept answers 400 and nothing is stored.
+They work only on uploads with a token or a login. Sent without either, they answer 401 with `{"error": "unauthenticated"}` and nothing is stored, so a paste you meant to be private never ends up public. Leave them out for an anonymous paste. A value the server does not accept answers 400 and nothing is stored.
 
 Read your own private paste with the same header:
 
@@ -464,7 +464,9 @@ Read your own private paste with the same header:
 curl -H "Authorization: Bearer $HASTEBIN_TOKEN" https://paste.example.com/raw/<key>
 ```
 
-A token that is malformed, unknown or revoked answers 401 with `WWW-Authenticate: Bearer realm="hastebin", error="invalid_token"`; the request never falls back to anonymous. A token revoked while an upload is still arriving stops it too: the content is deleted and the answer is 401. Over your limits an upload answers 413 (largest paste or storage full), 403 (too many pastes) or 429 (hourly quota). On the web page, a paste is yours only when the page sends the CSRF token along, which it does by itself when you are logged in; a plain cookie on `POST /documents` still makes an anonymous paste.
+A token that is malformed, unknown or revoked answers 401 with `WWW-Authenticate: Bearer realm="hastebin", error="invalid_token"`; the request never falls back to anonymous. A token revoked while an upload is still arriving stops it too: the content is deleted and the answer is 401. Over your limits an upload answers 413 (largest paste or storage full), 403 (too many pastes) or 429 (hourly quota). On the web page, a paste is yours only when the page sends the CSRF token along, which it does by itself when you are logged in; a plain cookie on `POST /documents` still makes an anonymous paste. When the page sends the CSRF token but the login has ended (you logged out in another tab, or the session expired), the upload answers 401 with `{"error": "session_expired"}` and nothing is stored. The page keeps your text and asks what to do: sign in again and come back to it, or save it as an anonymous public paste.
+
+Each account may make 120 owned uploads a minute to `/documents` and `/log`, with any of its tokens or its login, as on `/mcp`. More get 429 with `Retry-After`. Anonymous uploads are not counted here; the limits per client apply to them as before.
 
 To download a paste as a file, add `?download=1` to its `/raw` link: `/raw/<key>.log?download=1` saves `<key>.log`.
 

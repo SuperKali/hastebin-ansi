@@ -61,7 +61,10 @@ func (l *KeyLocks) held() int {
 
 // Gate is the handler.AccessGate of registered pastes: a private paste only
 // for its owner, an expired one for no one, a removed one as missing (410
-// when it was public). A paste without a row is anonymous and public.
+// when it was public), a deleted one whose content waits in the delete
+// queue as missing. Any other key without a row is anonymous and public.
+// When the database cannot tell, Check returns its error and the read
+// fails: the gate never opens on an error.
 type Gate struct {
 	DB    *accounts.DB
 	Views *accounts.Views
@@ -97,6 +100,9 @@ func (g *Gate) Check(ctx context.Context, key string, p *auth.Principal, op hand
 			return nil, handler.ErrDenied
 		}
 		return nil, handler.ErrRemoved
+	}
+	if a.Pending {
+		return nil, handler.ErrDenied
 	}
 	if !a.Registered {
 		return &handler.Meta{}, nil
@@ -217,11 +223,16 @@ func (d *Handler) Readers(w http.ResponseWriter, r *http.Request) (*auth.Princip
 // as a read by someone else, whatever the visibility: the first one inside
 // the edit window ends it, under the key lock, before the content opens,
 // and it counts as a view. A key without a row, anonymous or missing, has
-// nothing to record. The caller checked the tombstone already.
+// nothing to record. The caller checked the tombstone already. A key whose
+// owner deleted it, with its content still in the delete queue, is
+// handler.ErrDenied: no one reads it, an admin neither.
 func (g *Gate) ModeratorRead(ctx context.Context, key string, adminID int64) error {
 	a, err := g.DB.AccessOf(ctx, key)
 	if err != nil {
 		return err
+	}
+	if a.Pending {
+		return handler.ErrDenied
 	}
 	if !a.Registered || a.UserID == adminID {
 		return nil
