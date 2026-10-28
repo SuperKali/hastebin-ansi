@@ -162,3 +162,56 @@ func TestLimitLoadedLength(t *testing.T) {
 	require.Equal(t, 4000000, limitLoadedLength(loaded, 4000000, 256<<20))
 	require.Less(t, limitLoadedLength(loaded, 32<<20, 32<<20), 8<<20)
 }
+
+func TestOpenAccounts(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.NewConfig("nonexistent.yaml")
+	cfg.Storage.FilePath = dir
+
+	// Without login and without a database nothing is opened or created
+	db, err := openAccounts(cfg)
+	require.NoError(t, err)
+	require.Nil(t, db)
+	require.NoFileExists(t, filepath.Join(dir, "hastebin.db"))
+
+	// With login the database is created in the data dir, mode 0600
+	cfg.GitHubClientID = "Iv1.test"
+	db, err = openAccounts(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, db)
+	require.NoError(t, db.Close())
+	info, err := os.Stat(filepath.Join(dir, "hastebin.db"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	// Login turned off later: the existing database is still opened
+	cfg.GitHubClientID = ""
+	db, err = openAccounts(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, db)
+	require.NoError(t, db.Close())
+
+	// Memcached may evict registered pastes, so accounts refuse it
+	cfg.Storage.Type = "memcached"
+	cfg.AccountsDB = filepath.Join(dir, "hastebin.db")
+	_, err = openAccounts(cfg)
+	require.ErrorContains(t, err, "memcached")
+}
+
+func TestBackupAccounts(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.NewConfig("nonexistent.yaml")
+	cfg.Storage.FilePath = dir
+
+	out := filepath.Join(t.TempDir(), "backup.db")
+	require.Error(t, backupAccounts(cfg, out), "no database yet")
+
+	cfg.GitHubClientID = "Iv1.test"
+	db, err := openAccounts(cfg)
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, backupAccounts(cfg, out))
+	info, err := os.Stat(out)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}

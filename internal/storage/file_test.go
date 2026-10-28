@@ -453,3 +453,51 @@ func TestFileStorageSetAtomic(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, info.IsDir())
 }
+
+func TestFileStorageJanitorIgnoresDatabase(t *testing.T) {
+	dir := t.TempDir()
+
+	// The accounts database lives in the data dir, with its WAL and shared memory files
+	names := []string{"hastebin.db", "hastebin.db-wal", "hastebin.db-shm", "hastebin.db-journal"}
+	old := time.Now().Add(-1000 * time.Hour)
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte("sqlite"), 0o600))
+		require.NoError(t, os.Chtimes(path, old, old))
+	}
+
+	// Neither startup, the expiry sweep nor the temp file sweep touch them
+	s := NewFileStorage(dir, time.Second).(*FileStorage)
+	t.Cleanup(func() { s.Close() })
+	require.NoError(t, s.Set("paste", "content", false))
+	age(t, dir, "paste", time.Hour)
+	require.Equal(t, 1, s.sweep(time.Now()))
+	require.Equal(t, 0, s.removeTemps(time.Now(), 0))
+	for _, name := range names {
+		require.FileExists(t, filepath.Join(dir, name))
+	}
+
+	// Nor do they count as pastes
+	count, bytes, err := s.Usage()
+	require.NoError(t, err)
+	require.Zero(t, count)
+	require.Zero(t, bytes)
+}
+
+func TestFileStorageUsage(t *testing.T) {
+	dir := t.TempDir()
+	s := NewFileStorage(dir, 0).(*FileStorage)
+	t.Cleanup(func() { s.Close() })
+	require.NoError(t, s.Set("a", "12345", false))
+	require.NoError(t, s.Set("b", "123", true))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, tempPrefix+"x"), []byte("partial"), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, md5Hex("dir")), 0o700))
+
+	count, bytes, err := s.Usage()
+	require.NoError(t, err)
+	require.EqualValues(t, 2, count)
+	require.EqualValues(t, 8, bytes)
+
+	s.SetMinFree(42)
+	require.EqualValues(t, 42, s.MinFree())
+}

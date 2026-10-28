@@ -18,6 +18,9 @@ import (
 
 	"github.com/armbian/ansi-hastebin/config"
 	"github.com/armbian/ansi-hastebin/handler"
+	"github.com/armbian/ansi-hastebin/internal/accounts"
+	"github.com/armbian/ansi-hastebin/internal/admin"
+	"github.com/armbian/ansi-hastebin/internal/auth"
 	"github.com/armbian/ansi-hastebin/internal/keygenerator"
 	"github.com/armbian/ansi-hastebin/internal/mcpserver"
 	"github.com/armbian/ansi-hastebin/internal/storage"
@@ -48,6 +51,17 @@ type Server struct {
 	mux            *chi.Mux
 	trustedProxies []*net.IPNet
 	realIPHeader   string
+	started        time.Time
+
+	// Accounts is the accounts database, nil when accounts are off. Set it
+	// before RegisterRoutes; the server closes it at shutdown.
+	Accounts *accounts.DB
+
+	// auth logs users in, nil when accounts are off
+	auth *auth.Service
+
+	// stopAccounts stops the session sweeper
+	stopAccounts context.CancelFunc
 
 	// Version is the build version, logged at start and shown in /api/info
 	Version string
@@ -99,15 +113,52 @@ func NewServer(config *config.Config, storage storage.Storage, keyGenerator keyg
 		mux:            mux,
 		trustedProxies: trustedProxies,
 		realIPHeader:   realIPHeader,
+		started:        time.Now(),
 		Version:        "dev",
 	}
+}
+
+// newAuth sets up login and sessions on the accounts database. A bad login
+// configuration stops the server.
+func (s *Server) newAuth(mcpMaxLength int) *auth.Service {
+	endpoints, err := auth.GitHubEndpoints(s.config.GitHubOAuthBase, s.config.GitHubAPIBase)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Invalid GitHub endpoint override")
+	}
+	if s.config.GitHubOAuthBase != "" || s.config.GitHubAPIBase != "" {
+		log.Warn().Str("oauth", endpoints.AuthURL).Str("api", endpoints.APIBase).
+			Msg("GitHub endpoints are overridden: this is for testing against a fake GitHub only")
+	}
+	svc, err := auth.New(s.Accounts, auth.Config{
+		ClientID:      s.config.GitHubClientID,
+		ClientSecret:  s.config.GitHubClientSecret,
+		BaseURL:       s.config.BaseURL,
+		Endpoints:     endpoints,
+		SessionTTL:    time.Duration(s.config.SessionTTL) * time.Second,
+		SessionIdle:   time.Duration(s.config.SessionIdle) * time.Second,
+		AdminIDs:      s.config.AdminGitHubIDs,
+		MinAccountAge: time.Duration(s.config.RegisterMinAccountAge) * time.Second,
+		ClientKey:     func(r *http.Request) string { return handler.ClientKey(handler.ClientIP(r)) },
+		Limits: func(*auth.Principal) any {
+			return map[string]int{"max_length": s.config.MaxLength, "mcp_max_length": mcpMaxLength}
+		},
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("Invalid login configuration")
+	}
+	log.Info().Bool("login", svc.LoginEnabled()).Bool("secure_cookies", svc.SecureCookies()).
+		Int("admins", len(s.config.AdminGitHubIDs)).Int("session_ttl", s.config.SessionTTL).
+		Int("session_idle", s.config.SessionIdle).Int("register_min_account_age", s.config.RegisterMinAccountAge).
+		Msg("Accounts configured")
+	return svc
 }
 
 func (s *Server) RegisterRoutes() {
 	// Register middlewares. The real IP middleware runs first so the in-flight
 	// limit, the logger and the rate limiter see the resolved client address.
+	inflight := handler.NewInflightLimiter(s.config.MaxInflightPerClient)
 	s.mux.Use(realIPMiddleware(s.trustedProxies, s.realIPHeader))
-	s.mux.Use(inflightMiddleware(handler.NewInflightLimiter(s.config.MaxInflightPerClient)))
+	s.mux.Use(inflightMiddleware(inflight))
 	s.mux.Use(accessLogger())
 	s.mux.Use(middleware.Recoverer)
 	s.mux.Use(securityHeadersMiddleware)
@@ -144,11 +195,13 @@ func (s *Server) RegisterRoutes() {
 		log.Warn().Int("mcp_max_length", wanted).Int("used", mcpMaxLength).Int("memory_budget", s.config.MemoryBudget).
 			Msg("mcp_max_length lowered: an upload_log request is charged 6 times its size and must fit in one client's share of memory_budget (an eighth of it)")
 	}
+	var mcpHandler *mcpserver.Handler
 	if s.config.MCPEnable {
-		s.mux.Handle("/mcp", mcpserver.NewHandler(documentHandler, mcpserver.Options{
+		mcpHandler = mcpserver.NewHandler(documentHandler, mcpserver.Options{
 			MaxLength:            mcpMaxLength,
 			MaxInflightPerClient: s.config.MCPMaxInflightPerClient,
-		}))
+		})
+		s.mux.Handle("/mcp", mcpHandler)
 	} else {
 		s.mux.Handle("/mcp", http.NotFoundHandler())
 	}
@@ -162,6 +215,36 @@ func (s *Server) RegisterRoutes() {
 		Int("memory_budget", s.config.MemoryBudget).Int("upload_quota", s.config.UploadQuota).
 		Msg("Upload options configured")
 
+	// Accounts: login, sessions, the dashboard and the admin page. Without
+	// them all of it answers 404 instead of the index page.
+	if s.Accounts != nil {
+		s.auth = s.newAuth(mcpMaxLength)
+		s.auth.RegisterRoutes(s.mux)
+		files, _ := s.storage.(*storage.FileStorage)
+		(&admin.Handler{
+			Auth:        s.auth,
+			DB:          s.Accounts,
+			Version:     s.Version,
+			Started:     s.started,
+			Config:      s.config.Effective(),
+			StorageType: s.config.Storage.Type,
+			Files:       files,
+			Docs:        documentHandler,
+			Inflight:    inflight,
+			MCP:         mcpHandler,
+		}).RegisterRoutes(s.mux)
+		serveDashboard := servePage("dashboard.html")
+		s.mux.Get("/dashboard", serveDashboard)
+		s.mux.Head("/dashboard", serveDashboard)
+		s.mux.Get("/dashboard/*", serveDashboard)
+		s.mux.Head("/dashboard/*", serveDashboard)
+		s.mux.HandleFunc("/api/v1/*", auth.NotFound)
+	} else {
+		for _, pattern := range []string{"/auth/*", "/admin", "/admin/*", "/dashboard", "/dashboard/*", "/api/v1/*"} {
+			s.mux.HandleFunc(pattern, auth.NotFound)
+		}
+	}
+
 	// Server features for the web page
 	s.mux.Get("/api/info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -171,6 +254,7 @@ func (s *Server) RegisterRoutes() {
 			"mcp":            s.config.MCPEnable,
 			"max_length":     s.config.MaxLength,
 			"mcp_max_length": mcpMaxLength,
+			"login":          s.auth != nil && s.auth.LoginEnabled(),
 		})
 	})
 
@@ -185,6 +269,10 @@ func (s *Server) RegisterRoutes() {
 	// HEAD gets the same answer without the body, which net/http drops
 	serveWeb := func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")
+		if privatePages[path] {
+			http.NotFound(w, r)
+			return
+		}
 		if _, err := static.StaticFS.Open(path); err == nil {
 			fileServer.ServeHTTP(w, r)
 			return
@@ -205,6 +293,25 @@ func (s *Server) RegisterRoutes() {
 	}
 	s.mux.Get("/*", serveWeb)
 	s.mux.Head("/*", serveWeb)
+}
+
+// privatePages are embedded pages served only on their own routes, behind
+// their checks: /admin for admins, /dashboard when accounts are on
+var privatePages = map[string]bool{"admin.html": true, "admin.js": true, "dashboard.html": true}
+
+// servePage serves one embedded HTML page
+func servePage(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		page, err := static.StaticFS.Open(name)
+		if err != nil {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+		defer page.Close()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		io.Copy(w, page)
+	}
 }
 
 const (
@@ -242,6 +349,12 @@ func (s *Server) Start() {
 		}()
 	}
 
+	if s.auth != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		s.stopAccounts = cancel
+		go s.auth.Run(ctx)
+	}
+
 	log.Info().Str("version", s.Version).Str("host", s.config.Host).Int("port", s.config.Port).Msg("Starting server")
 
 	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -263,6 +376,15 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if s.metricsServer != nil {
 		if err := s.metricsServer.Shutdown(ctx); err != nil {
 			log.Error().Err(err).Msg("Failed to shutdown metrics server")
+		}
+	}
+
+	if s.stopAccounts != nil {
+		s.stopAccounts()
+	}
+	if s.Accounts != nil {
+		if err := s.Accounts.Close(); err != nil {
+			log.Error().Err(err).Msg("Failed to close the accounts database")
 		}
 	}
 }
@@ -464,12 +586,15 @@ type redactingFormatter struct {
 
 func (f *redactingFormatter) NewLogEntry(r *http.Request) middleware.LogEntry {
 	path := redactPath(r.URL.Path)
-	if path == r.URL.Path {
+	// The query of a login route holds the OAuth code and state, or a
+	// return path that may be a paste link: it is never logged
+	login := strings.HasPrefix(r.URL.Path, "/auth/")
+	if path == r.URL.Path && !login {
 		return f.next.NewLogEntry(r)
 	}
 	logged := *r
 	logged.RequestURI = path
-	if r.URL.RawQuery != "" {
+	if r.URL.RawQuery != "" && !login {
 		logged.RequestURI += "?" + r.URL.RawQuery
 	}
 	return f.next.NewLogEntry(&logged)
@@ -536,7 +661,7 @@ func redactKey(segment string) string {
 // route or a file of the web page
 func isPastePage(name string) bool {
 	switch name {
-	case "documents", "log", "mcp", "health", "metrics", "api", "dashboard", "admin":
+	case "documents", "log", "mcp", "health", "metrics", "api", "dashboard", "admin", "auth":
 		return false
 	}
 	if file, err := static.StaticFS.Open(name); err == nil {

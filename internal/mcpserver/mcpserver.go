@@ -16,6 +16,7 @@ import (
 	"regexp/syntax"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -192,6 +193,11 @@ type service struct {
 	reads        *toolLimiter
 	searches     *toolLimiter
 	searchBudget time.Duration
+
+	// calls counts the tool calls made, by tool, since the start
+	uploadCalls atomic.Int64
+	readCalls   atomic.Int64
+	searchCalls atomic.Int64
 }
 
 func newService(docs *handler.DocumentHandler, maxLength int) *service {
@@ -254,8 +260,58 @@ type Options struct {
 	MaxInflightPerClient int
 }
 
+// Handler is the HTTP handler of the MCP endpoint
+type Handler struct {
+	http.Handler
+
+	svc      *service
+	inflight *handler.InflightLimiter
+
+	requests atomic.Int64 // requests received
+	refused  atomic.Int64 // requests refused with 429 for too many in progress
+}
+
+// Stats is what the MCP endpoint is doing now and has done since the start
+type Stats struct {
+	// InFlight is how many requests are in progress, and Clients from how many clients
+	InFlight int `json:"in_flight"`
+	Clients  int `json:"clients"`
+
+	// ReadsRunning and SearchesRunning are the read_paste and search_paste
+	// calls running now, out of ReadsMax and SearchesMax
+	ReadsRunning    int `json:"reads_running"`
+	ReadsMax        int `json:"reads_max"`
+	SearchesRunning int `json:"searches_running"`
+	SearchesMax     int `json:"searches_max"`
+
+	// Counters since the start
+	Requests int64 `json:"requests"`
+	Refused  int64 `json:"refused"`
+	Uploads  int64 `json:"uploads"`
+	Reads    int64 `json:"reads"`
+	Searches int64 `json:"searches"`
+}
+
+// Stats returns the current use and the counters of the endpoint
+func (h *Handler) Stats() Stats {
+	inFlight, clients := h.inflight.Totals()
+	return Stats{
+		InFlight:        inFlight,
+		Clients:         clients,
+		ReadsRunning:    h.svc.reads.inUse(),
+		ReadsMax:        h.svc.reads.max,
+		SearchesRunning: h.svc.searches.inUse(),
+		SearchesMax:     h.svc.searches.max,
+		Requests:        h.requests.Load(),
+		Refused:         h.refused.Load(),
+		Uploads:         h.svc.uploadCalls.Load(),
+		Reads:           h.svc.readCalls.Load(),
+		Searches:        h.svc.searchCalls.Load(),
+	}
+}
+
 // NewHandler returns the HTTP handler for the MCP endpoint
-func NewHandler(docs *handler.DocumentHandler, opts Options) http.Handler {
+func NewHandler(docs *handler.DocumentHandler, opts Options) *Handler {
 	svc := newService(docs, opts.MaxLength)
 	server := svc.newServer()
 	limit := bodyLimit(svc.maxLength, docs)
@@ -264,6 +320,7 @@ func NewHandler(docs *handler.DocumentHandler, opts Options) http.Handler {
 		maxInflight = DefaultMaxInflightPerClient
 	}
 	inflight := handler.NewInflightLimiter(maxInflight)
+	h := &Handler{svc: svc, inflight: inflight}
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 		Stateless:           true,
@@ -276,7 +333,8 @@ func NewHandler(docs *handler.DocumentHandler, opts Options) http.Handler {
 		DisableLocalhostProtection: true,
 	})
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.requests.Add(1)
 		w = &noStoreWriter{ResponseWriter: w}
 
 		// A person who opens the endpoint in a browser gets a hint, not a bare 405
@@ -301,6 +359,7 @@ func NewHandler(docs *handler.DocumentHandler, opts Options) http.Handler {
 		ip := handler.ClientIP(r)
 		release, ok := inflight.Acquire(ip)
 		if !ok {
+			h.refused.Add(1)
 			log.Info().Msg("MCP request rejected, the client has too many requests in progress")
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", inflightRetryAfter)
@@ -367,6 +426,7 @@ func NewHandler(docs *handler.DocumentHandler, opts Options) http.Handler {
 
 		mcpHandler.ServeHTTP(w, r.WithContext(ctx))
 	})
+	return h
 }
 
 // firstJSONByte returns the first byte of a JSON body after any whitespace,
@@ -529,6 +589,7 @@ func publicURLHint(docs *handler.DocumentHandler) string {
 }
 
 func (s *service) upload(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.uploadCalls.Add(1)
 	var in UploadInput
 	if len(req.Params.Arguments) > 0 {
 		if err := json.Unmarshal(req.Params.Arguments, &in); err != nil {
@@ -650,6 +711,7 @@ func (l *toolLimiter) inUse() int {
 }
 
 func (s *service) read(ctx context.Context, _ *mcp.CallToolRequest, in ReadInput) (*mcp.CallToolResult, any, error) {
+	s.readCalls.Add(1)
 	ip, _ := ctx.Value(clientIPKey{}).(string)
 	release, res := s.reads.acquire(ip)
 	if res != nil {
@@ -764,6 +826,7 @@ func cleanPrefix(raw string, n int, keepANSI bool) string {
 }
 
 func (s *service) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchInput) (*mcp.CallToolResult, any, error) {
+	s.searchCalls.Add(1)
 	if in.Pattern == "" {
 		return toolError("pattern is empty"), nil, nil
 	}

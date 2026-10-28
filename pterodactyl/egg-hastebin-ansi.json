@@ -298,6 +298,86 @@
             "user_editable": true,
             "rules": "required|integer|min:1",
             "field_type": "text"
+        },
+        {
+            "name": "GitHub Client ID",
+            "description": "Client ID of the GitHub OAuth App for login (preview, see Accounts in the README). Empty keeps login off. Set the app's callback URL to the Base URL followed by /auth/github/callback. Login needs an https Base URL.",
+            "env_variable": "GITHUB_CLIENT_ID",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "GitHub Client Secret",
+            "description": "Client secret of the GitHub OAuth App. Only panel admins can see or change it; the server never logs it or shows it.",
+            "env_variable": "GITHUB_CLIENT_SECRET",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Accounts Database",
+            "description": "SQLite file for accounts and sessions. Empty means hastebin.db in the data folder with file storage, else in the server folder. It is created when login is turned on, with mode 0600.",
+            "env_variable": "ACCOUNTS_DB",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Session Lifetime",
+            "description": "Seconds a login lasts at most. 2592000 is 30 days.",
+            "env_variable": "SESSION_TTL",
+            "default_value": "2592000",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:0,31536000",
+            "field_type": "text"
+        },
+        {
+            "name": "Session Idle Timeout",
+            "description": "Seconds a login lasts without being used. 604800 is 7 days.",
+            "env_variable": "SESSION_IDLE",
+            "default_value": "604800",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:0,31536000",
+            "field_type": "text"
+        },
+        {
+            "name": "Admin GitHub IDs",
+            "description": "Numeric GitHub user ids of the admins, comma separated, for example 583231. Find yours at https://api.github.com/users/<login>. Admins get the /admin page.",
+            "env_variable": "ADMIN_GITHUB_IDS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:512|regex:/^[0-9, ]*$/",
+            "field_type": "text"
+        },
+        {
+            "name": "Admin Re-login",
+            "description": "Seconds after a login an admin may still take destructive actions without logging in again. 43200 is 12 hours.",
+            "env_variable": "ADMIN_REAUTH",
+            "default_value": "43200",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:0,2592000",
+            "field_type": "text"
+        },
+        {
+            "name": "Minimum GitHub Account Age",
+            "description": "Seconds a GitHub account must exist before it can register, against throwaway accounts. 604800 is 7 days. Admins are exempt. -1 turns the check off.",
+            "env_variable": "REGISTER_MIN_ACCOUNT_AGE",
+            "default_value": "604800",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:-1",
+            "field_type": "text"
         }
     ]
 }

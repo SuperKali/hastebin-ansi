@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>hastebin admin</title>
+    <link rel="icon" href="/favicon.ico" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/fira_code.css"
+        integrity="sha512-LaxQmGd9k/pW51CsEy2nLIlbUXCgsyvUEVT5fSguN2b2OBwHjMi2aiUdEEXSMg8Jvy+bCB01as61aNrHnL2DYQ=="
+        crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" type="text/css" href="/dashboard.css?v=0.2.0" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"
+        integrity="sha512-v2CJ7UaYy4JwqLDIrZUI/4hqeoQieOmAZNXBeQyjo21dadnwR+8ZaIJVT8EE2iyI61OV8e6M8PP2/4hpQINQ/g=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="/admin/admin.js?v=0.2.0"></script>
+</head>
+
+<body>
+    <header class="top">
+        <a class="brand" href="/">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                <path fill="currentColor" d="M12 2l8 3.2v6.1c0 5-3.4 9.1-8 10.7-4.6-1.6-8-5.7-8-10.7V5.2zm0 2.1L6 6.5v4.8c0 3.9 2.5 7.2 6 8.6 3.5-1.4 6-4.7 6-8.6V6.5z"/>
+            </svg>
+            hastebin <span class="brand-sub">admin</span>
+        </a>
+        <nav class="tabs" aria-label="Admin sections">
+            <a href="/admin" aria-current="page">Status</a>
+        </nav>
+        <span class="who"></span>
+    </header>
+
+    <main>
+        <div class="toolbar">
+            <h1>Status</h1>
+            <span class="updated" aria-live="polite"></span>
+            <button type="button" class="btn refresh">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M13.6 2.4v4h-4l1.5-1.5A4.5 4.5 0 1 0 12.5 8h1.6A6 6 0 1 1 12.2 3.8z"/>
+                </svg>
+                Refresh
+            </button>
+        </div>
+        <p class="notice" role="alert" hidden></p>
+
+        <section class="grid">
+            <article class="card" id="card-server">
+                <h2>
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M2 2h12v5H2zm0 7h12v5H2zm2-5v1h2V4zm0 7v1h2v-1z"/>
+                    </svg>
+                    Server
+                </h2>
+                <dl class="rows"></dl>
+            </article>
+            <article class="card" id="card-storage">
+                <h2>
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M8 1c3.3 0 6 1.1 6 2.5v9c0 1.4-2.7 2.5-6 2.5s-6-1.1-6-2.5v-9C2 2.1 4.7 1 8 1zm0 1.5c-2.8 0-4.5.9-4.5 1s1.7 1 4.5 1 4.5-.9 4.5-1-1.7-1-4.5-1z"/>
+                    </svg>
+                    Storage
+                </h2>
+                <dl class="rows"></dl>
+            </article>
+            <article class="card" id="card-accounts">
+                <h2>
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <circle cx="8" cy="5" r="3" fill="currentColor"/>
+                        <path fill="currentColor" d="M2 14.5c.4-3 2.9-5 6-5s5.6 2 6 5z"/>
+                    </svg>
+                    Accounts
+                </h2>
+                <dl class="rows"></dl>
+            </article>
+            <article class="card" id="card-load">
+                <h2>
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M1 13h14v1.5H1zM2 9h2v3H2zm4-4h2v7H6zm4 2h2v5h-2zm4-5h1v10h-1z"/>
+                    </svg>
+                    Load
+                </h2>
+                <dl class="rows"></dl>
+            </article>
+            <article class="card" id="card-mcp">
+                <h2>
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M6.7 1.7l1.1 3.1a2 2 0 0 0 1.2 1.2l3.1 1.1-3.1 1.1a2 2 0 0 0-1.2 1.2l-1.1 3.1-1.1-3.1a2 2 0 0 0-1.2-1.2L1.3 7.1l3.1-1.1a2 2 0 0 0 1.2-1.2z"/>
+                    </svg>
+                    MCP
+                </h2>
+                <dl class="rows"></dl>
+            </article>
+        </section>
+
+        <section class="card wide" id="card-config">
+            <h2>
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M2 3h12v1.5H2zm0 4.25h12v1.5H2zM2 11.5h12V13H2zM5 2h1.5v3.5H5zm4 4.25h1.5v3.5H9zM4 10.5h1.5V14H4z"/>
+                </svg>
+                Effective config
+            </h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr><th scope="col">Setting</th><th scope="col">Value</th></tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+</body>
+
+</html>

@@ -23,6 +23,9 @@ func TestInflightLimiter(t *testing.T) {
 	_, ok = l.Acquire("192.0.2.1")
 	require.False(t, ok)
 	require.Equal(t, 2, l.InUse("192.0.2.1"))
+	requests, clients := l.Totals()
+	require.Equal(t, 2, requests)
+	require.Equal(t, 1, clients)
 
 	// Other clients have their own count; an IPv6 /64 is one client
 	_, ok = l.Acquire("192.0.2.2")
@@ -58,6 +61,9 @@ func TestInflightLimiter(t *testing.T) {
 	require.True(t, ok)
 	release()
 	require.Zero(t, none.InUse("192.0.2.1"))
+	requests, clients = none.Totals()
+	require.Zero(t, requests)
+	require.Zero(t, clients)
 }
 
 func TestUploadGuard_Sustained(t *testing.T) {

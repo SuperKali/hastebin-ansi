@@ -390,6 +390,9 @@ func TestUploadLimit(t *testing.T) {
 	// Hold the only slot, as a slow large upload would
 	release, ok := handler.AcquireUpload("", -1)
 	require.True(t, ok)
+	inUse, total := handler.UploadSlots()
+	require.Equal(t, 1, inUse)
+	require.Equal(t, 1, total)
 
 	for _, path := range []string{"/documents", "/log"} {
 		resp := sendRequest(router, http.MethodPost, path, strings.NewReader(large))

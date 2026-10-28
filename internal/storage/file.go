@@ -511,3 +511,41 @@ func isPasteFileName(name string) bool {
 	_, err := hex.DecodeString(name)
 	return err == nil
 }
+
+// Usage returns how many paste files the data dir holds and their total
+// size. Only files named like a paste count, so the accounts database and
+// temp files do not. It reads the whole directory, so call it rarely.
+func (s *FileStorage) Usage() (count, bytes int64, err error) {
+	dir, err := os.Open(s.path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer dir.Close()
+	for {
+		entries, err := dir.ReadDir(janitorBatch)
+		for _, entry := range entries {
+			if !entry.Type().IsRegular() || !isPasteFileName(entry.Name()) {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			count++
+			bytes += info.Size()
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return count, bytes, nil
+			}
+			return count, bytes, err
+		}
+	}
+}
+
+// MinFree returns the free space floor, 0 for none
+func (s *FileStorage) MinFree() int64 {
+	s.space.Lock()
+	defer s.space.Unlock()
+	return s.minFree
+}

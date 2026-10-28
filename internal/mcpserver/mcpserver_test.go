@@ -1457,3 +1457,29 @@ func TestSmallRequestCharged(t *testing.T) {
 	hold()
 	require.Zero(t, docs.UploadMemory.InUse())
 }
+
+func TestHandlerStats(t *testing.T) {
+	docs := handler.NewDocumentHandler(10, 1<<20, storage.NewFileStorage(t.TempDir(), 0), keygenerator.NewRandomKeyGenerator(""))
+	h := NewHandler(docs, Options{})
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1.0.0"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: ts.URL}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { session.Close() })
+
+	key := upload(t, session, "line one\nline two\n")
+	call(t, session, "read_paste", map[string]any{"key_or_url": key})
+	call(t, session, "search_paste", map[string]any{"key_or_url": key, "pattern": "two"})
+
+	stats := h.Stats()
+	require.EqualValues(t, 1, stats.Uploads)
+	require.EqualValues(t, 1, stats.Reads)
+	require.EqualValues(t, 1, stats.Searches)
+	require.GreaterOrEqual(t, stats.Requests, int64(3))
+	require.Zero(t, stats.Refused)
+	require.Zero(t, stats.InFlight)
+	require.Zero(t, stats.ReadsRunning)
+	require.Equal(t, maxToolReads, stats.ReadsMax)
+	require.Equal(t, maxToolSearches, stats.SearchesMax)
+}

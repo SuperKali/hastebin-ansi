@@ -222,6 +222,14 @@ func (h *DocumentHandler) UploadsInProgress() int {
 	return h.slotCount
 }
 
+// UploadSlots returns how many upload slots are taken and how many there
+// are, 0 for no limit
+func (h *DocumentHandler) UploadSlots() (inUse, total int) {
+	h.slots.Lock()
+	defer h.slots.Unlock()
+	return h.slotCount, h.maxSlots
+}
+
 // ClientIP returns the client address of a request, as resolved by the real IP middleware
 func ClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)

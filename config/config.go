@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -175,6 +177,37 @@ type Config struct {
 	// NotFoundBan is how long a banned client IP gets 429 on lookups, in seconds
 	NotFoundBan int `yaml:"not_found_ban"`
 
+	// GitHubClientID and GitHubClientSecret are the GitHub OAuth App used for
+	// login. An empty client ID turns login off.
+	GitHubClientID     string `yaml:"github_client_id"`
+	GitHubClientSecret string `yaml:"github_client_secret"`
+
+	// GitHubOAuthBase and GitHubAPIBase replace https://github.com and
+	// https://api.github.com, for testing against a fake GitHub only. They
+	// must be https, or http on localhost or 127.0.0.1.
+	GitHubOAuthBase string `yaml:"github_oauth_base"`
+	GitHubAPIBase   string `yaml:"github_api_base"`
+
+	// AccountsDB is the SQLite file of accounts and sessions. Empty means
+	// hastebin.db in the data dir of "file" storage, ./hastebin.db otherwise.
+	AccountsDB string `yaml:"accounts_db"`
+
+	// SessionTTL is how long a login lasts at most, and SessionIdle how long
+	// it lasts without being used, in seconds
+	SessionTTL  int `yaml:"session_ttl"`
+	SessionIdle int `yaml:"session_idle"`
+
+	// AdminGitHubIDs are the numeric GitHub ids of the admins
+	AdminGitHubIDs []int64 `yaml:"admin_github_ids"`
+
+	// AdminReauth is how many seconds after a login an admin may still take
+	// destructive actions without logging in again
+	AdminReauth int `yaml:"admin_reauth"`
+
+	// RegisterMinAccountAge is how old, in seconds, a GitHub account must be
+	// to register. Admins are exempt. -1 turns the check off.
+	RegisterMinAccountAge int `yaml:"register_min_account_age"`
+
 	// Storage is the storage backend to use
 	// Available storage backends are: "redis", "file", "memcached", "mongodb", "s3", "postgres"
 	Storage StorageConfig `yaml:"storage"`
@@ -208,6 +241,10 @@ var DefaultConfig = &Config{
 	NotFoundLimit:           30,
 	NotFoundWindow:          900,
 	NotFoundBan:             3600,
+	SessionTTL:              30 * 24 * 3600,
+	SessionIdle:             7 * 24 * 3600,
+	AdminReauth:             12 * 3600,
+	RegisterMinAccountAge:   7 * 24 * 3600,
 	Storage: StorageConfig{
 		Type:     "file",
 		FilePath: "data",
@@ -221,6 +258,23 @@ var DefaultConfig = &Config{
 		Window: 15,
 	},
 	// No documents: the server then serves its built-in about page as "about"
+}
+
+// LoginEnabled reports whether GitHub login is configured
+func (c *Config) LoginEnabled() bool {
+	return c.GitHubClientID != ""
+}
+
+// AccountsDBPath returns the accounts database file: AccountsDB, or
+// hastebin.db in the data dir of "file" storage, or ./hastebin.db
+func (c *Config) AccountsDBPath() string {
+	if c.AccountsDB != "" {
+		return c.AccountsDB
+	}
+	if c.Storage.Type == "file" {
+		return filepath.Join(c.Storage.FilePath, "hastebin.db")
+	}
+	return "hastebin.db"
 }
 
 // ExpirationDuration returns the paste expiration, which is configured in seconds
@@ -445,6 +499,47 @@ func NewConfig(configFile string) *Config {
 		}
 	}
 
+	for _, setting := range []struct {
+		env    string
+		target *string
+	}{
+		{"GITHUB_CLIENT_ID", &cfg.GitHubClientID},
+		{"GITHUB_CLIENT_SECRET", &cfg.GitHubClientSecret},
+		{"GITHUB_OAUTH_BASE", &cfg.GitHubOAuthBase},
+		{"GITHUB_API_BASE", &cfg.GitHubAPIBase},
+		{"ACCOUNTS_DB", &cfg.AccountsDB},
+	} {
+		if value := os.Getenv(setting.env); value != "" {
+			*setting.target = value
+		}
+	}
+
+	for _, setting := range []struct {
+		env    string
+		target *int
+	}{
+		{"SESSION_TTL", &cfg.SessionTTL},
+		{"SESSION_IDLE", &cfg.SessionIdle},
+		{"ADMIN_REAUTH", &cfg.AdminReauth},
+		{"REGISTER_MIN_ACCOUNT_AGE", &cfg.RegisterMinAccountAge},
+	} {
+		if value := os.Getenv(setting.env); value != "" {
+			valueInt, err := strconv.Atoi(value)
+			if err != nil {
+				log.Fatal().Str("value", value).Msgf("Failed to parse %s environment variable: expected seconds", setting.env)
+			}
+			*setting.target = valueInt
+		}
+	}
+
+	if adminIDs := os.Getenv("ADMIN_GITHUB_IDS"); adminIDs != "" {
+		ids, err := ParseGitHubIDs(adminIDs)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to parse ADMIN_GITHUB_IDS environment variable: expected numeric GitHub ids, comma separated")
+		}
+		cfg.AdminGitHubIDs = ids
+	}
+
 	if loggingLevel := os.Getenv("LOGGING_LEVEL"); loggingLevel != "" {
 		cfg.Logging.Level = loggingLevel
 	}
@@ -618,8 +713,134 @@ func NewConfig(configFile string) *Config {
 		log.Fatal().Int("expiration", cfg.Expiration).Msg("expiration must be 0 (never) or more seconds")
 	}
 
+	for _, setting := range []struct {
+		name   string
+		target *int
+		def    int
+	}{
+		{"session_ttl", &cfg.SessionTTL, DefaultConfig.SessionTTL},
+		{"session_idle", &cfg.SessionIdle, DefaultConfig.SessionIdle},
+		{"admin_reauth", &cfg.AdminReauth, DefaultConfig.AdminReauth},
+	} {
+		if *setting.target < 0 {
+			log.Fatal().Int(setting.name, *setting.target).Msgf("%s must be 1 or more seconds (0 means the default)", setting.name)
+		}
+		if *setting.target == 0 {
+			*setting.target = setting.def
+		}
+	}
+	if cfg.SessionIdle > cfg.SessionTTL {
+		cfg.SessionIdle = cfg.SessionTTL
+	}
+
+	if cfg.RegisterMinAccountAge == 0 {
+		cfg.RegisterMinAccountAge = DefaultConfig.RegisterMinAccountAge
+	}
+	if cfg.RegisterMinAccountAge < -1 {
+		log.Fatal().Int("register_min_account_age", cfg.RegisterMinAccountAge).Msg("register_min_account_age must be seconds, 0 for the default or -1 for no check")
+	}
+
+	for _, id := range cfg.AdminGitHubIDs {
+		if id <= 0 {
+			log.Fatal().Int64("admin_github_ids", id).Msg("admin_github_ids must hold numeric GitHub ids, 1 or more")
+		}
+	}
+
+	cfg.GitHubClientID = strings.TrimSpace(cfg.GitHubClientID)
+	cfg.GitHubClientSecret = strings.TrimSpace(cfg.GitHubClientSecret)
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	cfg.RealIPHeader = strings.TrimSpace(cfg.RealIPHeader)
 
 	return cfg
+}
+
+// ParseGitHubIDs parses a comma separated list of numeric GitHub ids
+func ParseGitHubIDs(list string) ([]int64, error) {
+	var ids []int64
+	for _, field := range strings.Split(list, ",") {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(field, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("invalid GitHub id %q", field)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// Setting is one effective setting, as the admin status shows it
+type Setting struct {
+	Key   string `json:"key"`
+	Value any    `json:"value"`
+}
+
+// secretState shows a secret only as "set" or "unset"
+func secretState(value string) string {
+	if value == "" {
+		return "unset"
+	}
+	return "set"
+}
+
+// Effective returns the settings in use, by yaml key. Secrets (the GitHub
+// client secret, the storage password and user, which for s3 is the access
+// key) show only as "set" or "unset".
+func (c *Config) Effective() []Setting {
+	documents := make([]string, 0, len(c.Documents))
+	for _, doc := range c.Documents {
+		documents = append(documents, doc.Key)
+	}
+	return []Setting{
+		{"host", c.Host},
+		{"port", c.Port},
+		{"base_url", c.BaseURL},
+		{"key_length", c.KeyLength},
+		{"key_generator", c.KeyGenerator},
+		{"max_length", c.MaxLength},
+		{"memory_budget", c.MemoryBudget},
+		{"min_free_disk", c.MinFreeDisk},
+		{"upload_quota", c.UploadQuota},
+		{"max_concurrent_uploads", c.MaxConcurrentUploads},
+		{"max_uploads_per_ip", c.MaxUploadsPerIP},
+		{"max_inflight_per_client", c.MaxInflightPerClient},
+		{"mcp_max_inflight_per_client", c.MCPMaxInflightPerClient},
+		{"upload_timeout", c.UploadTimeout},
+		{"not_found_limit", c.NotFoundLimit},
+		{"not_found_window", c.NotFoundWindow},
+		{"not_found_ban", c.NotFoundBan},
+		{"expiration", c.Expiration},
+		{"mcp_enable", c.MCPEnable},
+		{"mcp_max_length", c.MCPMaxLength},
+		{"trusted_proxies", c.TrustedProxies},
+		{"real_ip_header", c.RealIPHeader},
+		{"metrics_addr", c.MetricsAddr},
+		{"storage.type", c.Storage.Type},
+		{"storage.file_path", c.Storage.FilePath},
+		{"storage.host", c.Storage.Host},
+		{"storage.port", c.Storage.Port},
+		{"storage.username", secretState(c.Storage.Username)},
+		{"storage.password", secretState(c.Storage.Password)},
+		{"storage.database", c.Storage.Database},
+		{"storage.bucket", c.Storage.Bucket},
+		{"storage.aws_region", c.Storage.AWSRegion},
+		{"storage.tls", c.Storage.TLS},
+		{"documents", documents},
+		{"rate_limiting.enable", c.RateLimiting.Enable},
+		{"rate_limiting.limit", c.RateLimiting.Limit},
+		{"rate_limiting.window", c.RateLimiting.Window},
+		{"logging.level", c.Logging.Level},
+		{"github_client_id", c.GitHubClientID},
+		{"github_client_secret", secretState(c.GitHubClientSecret)},
+		{"github_oauth_base", c.GitHubOAuthBase},
+		{"github_api_base", c.GitHubAPIBase},
+		{"accounts_db", c.AccountsDBPath()},
+		{"session_ttl", c.SessionTTL},
+		{"session_idle", c.SessionIdle},
+		{"admin_github_ids", c.AdminGitHubIDs},
+		{"admin_reauth", c.AdminReauth},
+		{"register_min_account_age", c.RegisterMinAccountAge},
+	}
 }

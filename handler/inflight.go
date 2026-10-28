@@ -74,3 +74,16 @@ func (l *InflightLimiter) InUse(ip string) int {
 	defer l.mu.Unlock()
 	return l.byClient[ClientKey(ip)]
 }
+
+// Totals returns how many requests are in progress and from how many clients
+func (l *InflightLimiter) Totals() (requests, clients int) {
+	if l == nil {
+		return 0, 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, n := range l.byClient {
+		requests += n
+	}
+	return requests, len(l.byClient)
+}

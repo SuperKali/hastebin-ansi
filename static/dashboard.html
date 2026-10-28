@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>hastebin - your pastes</title>
+    <link rel="icon" href="/favicon.ico" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/fira_code.css"
+        integrity="sha512-LaxQmGd9k/pW51CsEy2nLIlbUXCgsyvUEVT5fSguN2b2OBwHjMi2aiUdEEXSMg8Jvy+bCB01as61aNrHnL2DYQ=="
+        crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" type="text/css" href="/dashboard.css?v=0.2.0" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"
+        integrity="sha512-v2CJ7UaYy4JwqLDIrZUI/4hqeoQieOmAZNXBeQyjo21dadnwR+8ZaIJVT8EE2iyI61OV8e6M8PP2/4hpQINQ/g=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="/dashboard.js?v=0.2.0"></script>
+</head>
+
+<body>
+    <header class="top">
+        <a class="brand" href="/">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                <path fill="currentColor" d="M5 3h9l5 5v13H5zm8 1.5V9h4.5zM8 12h8v1.6H8zm0 3.2h8v1.6H8z"/>
+            </svg>
+            hastebin
+        </a>
+        <span class="who"></span>
+    </header>
+
+    <main class="narrow">
+        <section class="card hero" aria-labelledby="dash-title">
+            <svg class="hero-glyph" viewBox="0 0 64 64" width="64" height="64" aria-hidden="true" focusable="false">
+                <rect x="10" y="14" width="34" height="42" rx="5" fill="currentColor" opacity="0.25"/>
+                <rect x="18" y="8" width="36" height="44" rx="5" fill="none" stroke="currentColor" stroke-width="3"/>
+                <path d="M26 22h20M26 30h20M26 38h12" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+            </svg>
+            <h1 id="dash-title">Your pastes</h1>
+            <p class="lead">Dashboard coming in the next milestone.</p>
+            <p class="signed-in" hidden>Signed in as <b class="login"></b>.</p>
+            <p class="signed-out" hidden>You are not logged in.</p>
+            <div class="actions">
+                <a class="btn" href="/">New paste</a>
+                <a class="btn admin-link" href="/admin" hidden>Admin</a>
+                <button type="button" class="btn ghost logout" hidden>Log out</button>
+                <a class="btn primary login-link" href="/auth/github/login?return=%2Fdashboard" hidden>Log in with GitHub</a>
+            </div>
+            <p class="status-line" role="status" aria-live="polite"></p>
+        </section>
+    </main>
+</body>
+
+</html>

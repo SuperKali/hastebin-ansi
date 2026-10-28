@@ -88,6 +88,19 @@ base_url: ""
 # not_found_window: 900
 # not_found_ban: 3600
 
+# Login with GitHub (preview, see Accounts in the README). Empty client id
+# means login is off. Login needs base_url set to the https address; the
+# OAuth App callback URL is base_url + /auth/github/callback.
+# github_client_id: ""
+# github_client_secret: ""
+# SQLite file for accounts, default hastebin.db in the file storage folder
+# accounts_db: ""
+# session_ttl: 2592000
+# session_idle: 604800
+# admin_github_ids: [583231]
+# admin_reauth: 43200
+# register_min_account_age: 604800
+
 storage:
   type: "file"
   file_path: "data"

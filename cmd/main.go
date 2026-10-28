@@ -18,6 +18,7 @@ import (
 	hastebin "github.com/armbian/ansi-hastebin"
 	"github.com/armbian/ansi-hastebin/config"
 	"github.com/armbian/ansi-hastebin/handler"
+	"github.com/armbian/ansi-hastebin/internal/accounts"
 	"github.com/armbian/ansi-hastebin/internal/keygenerator"
 	"github.com/armbian/ansi-hastebin/internal/server"
 	"github.com/armbian/ansi-hastebin/internal/storage"
@@ -225,14 +226,67 @@ func loadDocuments(store storage.Storage, docs []config.DocumentConfig) error {
 	return nil
 }
 
+// openAccounts opens the accounts database when login is configured or the
+// file exists already: a server that had login keeps its sessions, and later
+// its private pastes, after login is turned off. It returns nil otherwise.
+func openAccounts(cfg *config.Config) (*accounts.DB, error) {
+	path := cfg.AccountsDBPath()
+	if !cfg.LoginEnabled() && !accounts.Exists(path) {
+		return nil, nil
+	}
+	if cfg.Storage.Type == "memcached" {
+		return nil, errors.New("accounts need a storage backend that keeps pastes: memcached may evict them at any time. Use another storage type, or remove github_client_id and the accounts database")
+	}
+	db, err := accounts.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	version, err := db.UserVersion(context.Background())
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	log.Info().Str("path", path).Int("schema_version", version).Bool("login", cfg.LoginEnabled()).Msg("Accounts database opened")
+	return db, nil
+}
+
+// backupAccounts writes a copy of the accounts database to out, see accounts.Backup
+func backupAccounts(cfg *config.Config, out string) error {
+	path := cfg.AccountsDBPath()
+	if err := accounts.Backup(context.Background(), path, out); err != nil {
+		return err
+	}
+	log.Info().Str("from", path).Str("to", out).Msg("Accounts database backed up")
+	return nil
+}
+
 func main() {
 	// Parse command line arguments
-	var configFile string
+	var configFile, backupOut string
 	flag.StringVar(&configFile, "config", "config.yaml", "Configuration file")
+	flag.StringVar(&backupOut, "backup-db", "", "Write a consistent copy of the accounts database to this new file, then exit. Safe while the server runs")
 	flag.Parse()
 
-	srv := server.NewServer(handleConfig(configFile))
+	if backupOut != "" {
+		if err := backupAccounts(config.NewConfig(configFile), backupOut); err != nil {
+			log.Fatal().Err(err).Msg("Backup of the accounts database failed")
+		}
+		return
+	}
+
+	cfg, store, keys := handleConfig(configFile)
+	db, err := openAccounts(cfg)
+	if err != nil {
+		msg := "Failed to open the accounts database"
+		if errors.Is(err, fs.ErrPermission) {
+			msg += ": " + storage.PermissionHint(filepath.Dir(cfg.AccountsDBPath()))
+		}
+		log.Fatal().Err(err).Str("path", cfg.AccountsDBPath()).Msg(msg)
+	}
+
+	srv := server.NewServer(cfg, store, keys)
 	srv.Version = version
+	srv.Accounts = db
 	srv.RegisterRoutes()
 
 	// Start the server in a separate goroutine

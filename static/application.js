@@ -157,12 +157,12 @@ haste.prototype.showMessage = function (msg, cls) {
 
 // Show the light key
 haste.prototype.lightKey = function () {
-    this.configureKey(['new', 'save', 'mcp']);
+    this.configureKey(['new', 'save', 'mcp', 'account']);
 };
 
 // Show the full key
 haste.prototype.fullKey = function () {
-    this.configureKey(['new', 'duplicate', 'twitter', 'raw', 'mcp']);
+    this.configureKey(['new', 'duplicate', 'twitter', 'raw', 'mcp', 'account']);
 };
 
 // Set the key up for certain things to be enabled
@@ -407,6 +407,10 @@ haste.prototype.configureButtons = function () {
                 _this.mcpPanel.open();
             }
         }
+    }, this.accountButton = {
+        $where: $('#box2 .account'), label: 'Log in', shortcutDescription: 'with GitHub', action: function () {
+            window.location.href = _this.accountHref();
+        }
     }];
     for (var i = 0; i < this.buttons.length; i++) {
         this.configureButton(this.buttons[i]);
@@ -465,7 +469,8 @@ haste.prototype.configureShortcuts = function () {
     });
 };
 
-// Ask the server which features are on, then show the MCP button if MCP is
+// Ask the server which features are on, then show the MCP button if MCP is,
+// and the account button if login is
 haste.prototype.loadInfo = function () {
     var _this = this;
     $.ajax('/api/info', {
@@ -475,8 +480,51 @@ haste.prototype.loadInfo = function () {
                 $('#box2 .mcp').prop('hidden', false);
                 $(document.body).addClass('mcp-on');
             }
+            if (info && info.login) {
+                _this.loadSession();
+            }
         }
     });
+};
+
+// Where the account button goes: the dashboard when logged in, else the
+// GitHub login, coming back to the page shown now
+haste.prototype.accountHref = function () {
+    if (this.user) {
+        return '/dashboard';
+    }
+    return '/auth/github/login?return=' + encodeURIComponent(window.location.pathname);
+};
+
+// Ask who is logged in and set the account button up for it
+haste.prototype.loadSession = function () {
+    var _this = this;
+    $.ajax('/api/v1/session', {
+        type: 'get', dataType: 'json', success: function (session) {
+            _this.user = session && session.user ? session.user : null;
+            _this.showAccount();
+        }, error: function () {
+            _this.user = null;
+            _this.showAccount();
+        }
+    });
+};
+
+haste.prototype.showAccount = function () {
+    var $button = $('#box2 .account');
+    if (this.user) {
+        this.accountButton.label = this.user.login;
+        this.accountButton.shortcutDescription = 'your pastes';
+        $button.attr('aria-label', 'Signed in as ' + this.user.login + ', open your pastes');
+        $button.find('.account-dot').prop('hidden', false);
+    } else {
+        this.accountButton.label = 'Log in';
+        this.accountButton.shortcutDescription = 'with GitHub';
+        $button.attr('aria-label', 'Log in with GitHub');
+        $button.find('.account-dot').prop('hidden', true);
+    }
+    $button.attr('href', this.accountHref()).prop('hidden', false);
+    $(document.body).addClass('account-on');
 };
 
 ///// The "AI / MCP" panel: how to add this server to an AI assistant

@@ -2,8 +2,10 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -349,6 +351,10 @@ func TestNewConfig_InvalidValuesAreFatal(t *testing.T) {
 		{"MCP_MAX_LENGTH", "-1", "mcp_max_length must be 0 (default) or more bytes"},
 		{"MEMORY_BUDGET", "-1", "memory_budget must be 1 or more bytes"},
 		{"MIN_FREE_DISK", "1GiB", "Failed to parse MIN_FREE_DISK"},
+		{"SESSION_TTL", "-1", "session_ttl must be 1 or more seconds"},
+		{"SESSION_IDLE", "7d", "Failed to parse SESSION_IDLE"},
+		{"ADMIN_GITHUB_IDS", "octocat", "Failed to parse ADMIN_GITHUB_IDS"},
+		{"REGISTER_MIN_ACCOUNT_AGE", "-2", "register_min_account_age must be seconds"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.env, func(t *testing.T) {
@@ -360,4 +366,72 @@ func TestNewConfig_InvalidValuesAreFatal(t *testing.T) {
 			require.Contains(t, string(out), tt.want)
 		})
 	}
+}
+
+func TestNewConfig_Accounts(t *testing.T) {
+	cfg := NewConfig("nonexistent.yaml")
+	require.False(t, cfg.LoginEnabled())
+	require.Equal(t, 2592000, cfg.SessionTTL)
+	require.Equal(t, 604800, cfg.SessionIdle)
+	require.Equal(t, 43200, cfg.AdminReauth)
+	require.Equal(t, 604800, cfg.RegisterMinAccountAge)
+	require.Empty(t, cfg.AdminGitHubIDs)
+	require.Equal(t, filepath.Join("data", "hastebin.db"), cfg.AccountsDBPath())
+
+	t.Setenv("STORAGE_TYPE", "redis")
+	require.Equal(t, "hastebin.db", NewConfig("nonexistent.yaml").AccountsDBPath())
+
+	t.Setenv("GITHUB_CLIENT_ID", " Iv1.abc ")
+	t.Setenv("GITHUB_CLIENT_SECRET", "s3cret")
+	t.Setenv("ACCOUNTS_DB", "/var/lib/hastebin/accounts.db")
+	t.Setenv("SESSION_TTL", "3600")
+	t.Setenv("SESSION_IDLE", "7200")
+	t.Setenv("ADMIN_GITHUB_IDS", " 583231, 42 ,")
+	t.Setenv("ADMIN_REAUTH", "600")
+	t.Setenv("REGISTER_MIN_ACCOUNT_AGE", "-1")
+	cfg = NewConfig("nonexistent.yaml")
+	require.True(t, cfg.LoginEnabled())
+	require.Equal(t, "Iv1.abc", cfg.GitHubClientID)
+	require.Equal(t, "s3cret", cfg.GitHubClientSecret)
+	require.Equal(t, "/var/lib/hastebin/accounts.db", cfg.AccountsDBPath())
+	require.Equal(t, 3600, cfg.SessionTTL)
+	// Idle never outlasts the session itself
+	require.Equal(t, 3600, cfg.SessionIdle)
+	require.Equal(t, []int64{583231, 42}, cfg.AdminGitHubIDs)
+	require.Equal(t, 600, cfg.AdminReauth)
+	require.Equal(t, -1, cfg.RegisterMinAccountAge)
+
+	// The yaml file takes a list of ids
+	path := t.TempDir() + "/config.yaml"
+	require.NoError(t, os.WriteFile(path, []byte("admin_github_ids: [7, 9]\n"), 0o600))
+	t.Setenv("ADMIN_GITHUB_IDS", "")
+	require.Equal(t, []int64{7, 9}, NewConfig(path).AdminGitHubIDs)
+}
+
+func TestParseGitHubIDs(t *testing.T) {
+	ids, err := ParseGitHubIDs("1,2, 3")
+	require.NoError(t, err)
+	require.Equal(t, []int64{1, 2, 3}, ids)
+	for _, bad := range []string{"0", "-4", "1;2", "x", "99999999999999999999"} {
+		_, err := ParseGitHubIDs(bad)
+		require.Error(t, err, bad)
+	}
+}
+
+func TestEffectiveRedactsSecrets(t *testing.T) {
+	t.Setenv("GITHUB_CLIENT_ID", "Iv1.public")
+	t.Setenv("GITHUB_CLIENT_SECRET", "very-secret-value")
+	t.Setenv("STORAGE_PASSWORD", "db-password")
+	cfg := NewConfig("nonexistent.yaml")
+	values := map[string]any{}
+	for _, s := range cfg.Effective() {
+		values[s.Key] = s.Value
+	}
+	require.Equal(t, "set", values["github_client_secret"])
+	require.Equal(t, "set", values["storage.password"])
+	require.Equal(t, "unset", values["storage.username"])
+	require.Equal(t, "Iv1.public", values["github_client_id"])
+	require.Equal(t, 2592000, values["session_ttl"])
+	require.NotContains(t, fmt.Sprint(cfg.Effective()), "very-secret-value")
+	require.NotContains(t, fmt.Sprint(cfg.Effective()), "db-password")
 }
