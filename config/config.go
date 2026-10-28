@@ -224,6 +224,11 @@ type Config struct {
 	// MaxTokensPerUser is how many API tokens one user may have
 	MaxTokensPerUser int `yaml:"max_tokens_per_user"`
 
+	// EditWindow is how many seconds after creation a registered paste may
+	// be edited under the same link, until someone else opens it. 0 turns
+	// same-link editing off.
+	EditWindow int `yaml:"edit_window"`
+
 	// Storage is the storage backend to use
 	// Available storage backends are: "redis", "file", "memcached", "mongodb", "s3", "postgres"
 	Storage StorageConfig `yaml:"storage"`
@@ -265,6 +270,7 @@ var DefaultConfig = &Config{
 	UserStorageLimit:        5 << 30,
 	UserMaxPastes:           10000,
 	MaxTokensPerUser:        20,
+	EditWindow:              600,
 	Storage: StorageConfig{
 		Type:     "file",
 		FilePath: "data",
@@ -305,10 +311,12 @@ func (c *Config) ExpirationDuration() time.Duration {
 // NewConfig creates a new Config instance
 func NewConfig(configFile string) *Config {
 	// Booleans that default to true are set before the file is read,
-	// so a missing key keeps the default and "false" turns them off
+	// so a missing key keeps the default and "false" turns them off. So is
+	// EditWindow, where 0 turns editing off.
 	cfg := &Config{
 		MCPEnable:    DefaultConfig.MCPEnable,
 		RateLimiting: RateLimitingConfig{Enable: DefaultConfig.RateLimiting.Enable},
+		EditWindow:   DefaultConfig.EditWindow,
 	}
 
 	// Read the configuration file
@@ -546,6 +554,7 @@ func NewConfig(configFile string) *Config {
 		{"REGISTERED_UPLOAD_QUOTA", &cfg.RegisteredUploadQuota},
 		{"USER_MAX_PASTES", &cfg.UserMaxPastes},
 		{"MAX_TOKENS_PER_USER", &cfg.MaxTokensPerUser},
+		{"EDIT_WINDOW", &cfg.EditWindow},
 	} {
 		if value := os.Getenv(setting.env); value != "" {
 			valueInt, err := strconv.Atoi(value)
@@ -806,6 +815,10 @@ func NewConfig(configFile string) *Config {
 		log.Fatal().Int("max_tokens_per_user", cfg.MaxTokensPerUser).Msg("max_tokens_per_user must be 1 to 1000 (0 means the default 20)")
 	}
 
+	if cfg.EditWindow < 0 {
+		log.Fatal().Int("edit_window", cfg.EditWindow).Msg("edit_window must be 0 (no same-link editing) or more seconds")
+	}
+
 	for _, id := range cfg.AdminGitHubIDs {
 		if id <= 0 {
 			log.Fatal().Int64("admin_github_ids", id).Msg("admin_github_ids must hold numeric GitHub ids, 1 or more")
@@ -913,5 +926,6 @@ func (c *Config) Effective() []Setting {
 		{"user_storage_limit", c.UserStorageLimit},
 		{"user_max_pastes", c.UserMaxPastes},
 		{"max_tokens_per_user", c.MaxTokensPerUser},
+		{"edit_window", c.EditWindow},
 	}
 }

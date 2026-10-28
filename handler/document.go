@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/armbian/ansi-hastebin/internal/auth"
 	"github.com/armbian/ansi-hastebin/internal/keygenerator"
 	"github.com/armbian/ansi-hastebin/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -126,6 +128,15 @@ type DocumentHandler struct {
 	// everyone is anonymous. It returns false when it refused the request and
 	// wrote the answer.
 	Uploaders func(w http.ResponseWriter, r *http.Request) (Uploader, bool)
+
+	// Access decides who may read a paste, before the store is touched. nil
+	// lets everyone read every paste, as without accounts.
+	Access AccessGate
+
+	// Readers tells who reads a paste, for Access: nil for anonymous. It
+	// returns false when it refused the request and wrote the answer. nil
+	// means everyone is anonymous.
+	Readers func(w http.ResponseWriter, r *http.Request) (*auth.Principal, bool)
 
 	// slots counts the large uploads in progress, in total and per client IP
 	slots     sync.Mutex
@@ -411,20 +422,10 @@ func (d *Document) Close() error {
 	return nil
 }
 
-// OpenDocumentFrom opens a paste for the client at ip, see openDocument. A
-// lookup of an unknown key counts against ip, and a banned ip gets a
-// *BannedError instead.
+// OpenDocumentFrom opens a paste for an anonymous client at ip, see
+// OpenDocumentAs
 func (h *DocumentHandler) OpenDocumentFrom(ip, key string, stream, cost int64) (*Document, error) {
-	if left, banned := h.NotFound.Banned(ip); banned {
-		return nil, &BannedError{RetryAfter: left}
-	}
-	doc, err := h.openDocument(ip, key, stream, cost)
-	if errors.Is(err, storage.ErrNotFound) {
-		if left, banned := h.NotFound.Miss(ip); banned {
-			return nil, &BannedError{RetryAfter: left}
-		}
-	}
-	return doc, err
+	return h.OpenDocumentAs(context.Background(), nil, ip, key, stream, cost)
 }
 
 // openDocument opens a paste for the client at ip, whose reads may hold at
@@ -522,6 +523,10 @@ func (h *DocumentHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		writeBanned(w, left)
 		return
 	}
+	meta, ok := h.gate(w, r, ip, key, opOf(r))
+	if !ok {
+		return
+	}
 
 	if r.Method == http.MethodHead {
 		if _, err := h.pasteSize(key); err != nil {
@@ -540,9 +545,10 @@ func (h *DocumentHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	defer doc.Close()
 
+	meta.Delivered()
 	log.Debug().Str("key", key).Int64("size", doc.Size).Msg("Retrieved document")
 	w.Header().Set("Content-Type", "application/json")
-	if err := writePreviewJSON(w, doc, key, PreviewSize); err != nil {
+	if err := writePreviewJSON(w, doc, key, PreviewSize, ownerJSON(meta)); err != nil {
 		log.Debug().Err(err).Msg("Failed to send document")
 	}
 }
@@ -557,10 +563,11 @@ const previewMemory = ResponseMemory
 
 // writePreviewJSON writes {"data": text, "key": key} as json.Encoder would,
 // where text is the paste, or its first limit bytes cut on a character
-// boundary when it is longer; then "size" and "truncated": true are added.
+// boundary when it is longer; then "size" and "truncated": true are added,
+// and extra, members in JSON form that start with a comma.
 // The text is read and escaped in pieces straight to w, so neither the text
 // nor its escaped form is ever held whole.
-func writePreviewJSON(w io.Writer, doc *Document, key string, limit int64) error {
+func writePreviewJSON(w io.Writer, doc *Document, key string, limit int64, extra string) error {
 	n, err := previewLength(doc, limit)
 	if err != nil {
 		return err
@@ -586,6 +593,7 @@ func writePreviewJSON(w io.Writer, doc *Document, key string, limit int64) error
 	if n < doc.Size {
 		fmt.Fprintf(bw, `,"size":%d,"truncated":true`, doc.Size)
 	}
+	bw.WriteString(extra)
 	bw.WriteString("}\n")
 	return bw.Flush()
 }
@@ -722,9 +730,13 @@ func (h *DocumentHandler) HandleRawGet(w http.ResponseWriter, r *http.Request) {
 		writeBanned(w, left)
 		return
 	}
+	meta, ok := h.gate(w, r, ip, key, opOf(r))
+	if !ok {
+		return
+	}
 
 	if opener, ok := h.Store.(storage.Opener); ok {
-		h.serveRawFile(w, r, opener, ip, key)
+		h.serveRawFile(w, r, opener, ip, key, meta)
 		return
 	}
 
@@ -747,6 +759,7 @@ func (h *DocumentHandler) HandleRawGet(w http.ResponseWriter, r *http.Request) {
 	}
 	defer doc.Close()
 
+	meta.Delivered()
 	log.Debug().Str("key", key).Msg("Retrieved raw document")
 	w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
 	setDownload(w, r, key)
@@ -754,7 +767,7 @@ func (h *DocumentHandler) HandleRawGet(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveRawFile streams a paste from a backend that can open it
-func (h *DocumentHandler) serveRawFile(w http.ResponseWriter, r *http.Request, opener storage.Opener, ip, key string) {
+func (h *DocumentHandler) serveRawFile(w http.ResponseWriter, r *http.Request, opener storage.Opener, ip, key string, meta *Meta) {
 	file, modTime, err := opener.Open(key)
 	if err != nil {
 		h.writeReadError(w, ip, key, err)
@@ -784,11 +797,12 @@ func (h *DocumentHandler) serveRawFile(w http.ResponseWriter, r *http.Request, o
 		}
 		defer release()
 		pasteRead.Inc()
+		meta.Delivered()
 	}
 	log.Debug().Str("key", key).Int64("size", size).Msg("Retrieved raw document")
 	w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
 	setDownload(w, r, key)
-	http.ServeContent(w, r, "", modTime, file)
+	http.ServeContent(keepNoStore(w), r, "", modTime, file)
 }
 
 // setDownload makes the answer of /raw/<key>.<ext>?download=1 a file to
@@ -829,6 +843,14 @@ func safeFileName(key string) string {
 		return "paste"
 	}
 	return name
+}
+
+// opOf is what a request to a content route does: OpHead for HEAD, else OpRead
+func opOf(r *http.Request) Op {
+	if r.Method == http.MethodHead {
+		return OpHead
+	}
+	return OpRead
 }
 
 // pasteSize returns the size of a paste; an empty paste counts as missing

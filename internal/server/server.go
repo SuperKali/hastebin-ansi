@@ -54,6 +54,9 @@ type Server struct {
 	realIPHeader   string
 	started        time.Time
 
+	// docs serves the paste routes
+	docs *handler.DocumentHandler
+
 	// Accounts is the accounts database, nil when accounts are off. Set it
 	// before RegisterRoutes; the server closes it at shutdown.
 	Accounts *accounts.DB
@@ -63,6 +66,11 @@ type Server struct {
 
 	// drainer deletes the content of deleted registered pastes, nil when accounts are off
 	drainer *accounts.Drainer
+
+	// sweeper deletes registered pastes past their expiry, and views counts
+	// their views; nil when accounts are off
+	sweeper *accounts.Sweeper
+	views   *accounts.Views
 
 	// stopAccounts stops the session sweeper
 	stopAccounts context.CancelFunc
@@ -195,6 +203,7 @@ func (s *Server) RegisterRoutes() {
 			time.Duration(s.config.NotFoundWindow)*time.Second, time.Duration(s.config.NotFoundBan)*time.Second)
 	}
 	documentHandler.RegisterRoutes(s.mux)
+	s.docs = documentHandler
 
 	// MCP endpoint for AI assistants. When it is off, answer 404 instead of the index page.
 	mcpMaxLength := mcpserver.EffectiveMaxLength(s.config.MCPMaxLength, documentHandler)
@@ -202,11 +211,18 @@ func (s *Server) RegisterRoutes() {
 		log.Warn().Int("mcp_max_length", wanted).Int("used", mcpMaxLength).Int("memory_budget", s.config.MemoryBudget).
 			Msg("mcp_max_length lowered: an upload_log request is charged 6 times its size and must fit in one client's share of memory_budget (an eighth of it)")
 	}
+	// With accounts on, login and sessions come first: MCP resolves tokens too
+	var bearer func(*http.Request) (*auth.Principal, error)
+	if s.Accounts != nil {
+		s.auth = s.newAuth(mcpMaxLength)
+		bearer = s.auth.Bearer
+	}
 	var mcpHandler *mcpserver.Handler
 	if s.config.MCPEnable {
 		mcpHandler = mcpserver.NewHandler(documentHandler, mcpserver.Options{
 			MaxLength:            mcpMaxLength,
 			MaxInflightPerClient: s.config.MCPMaxInflightPerClient,
+			Bearer:               bearer,
 		})
 		s.mux.Handle("/mcp", mcpHandler)
 	} else {
@@ -225,7 +241,6 @@ func (s *Server) RegisterRoutes() {
 	// Accounts: login, sessions, the dashboard and the admin page. Without
 	// them all of it answers 404 instead of the index page.
 	if s.Accounts != nil {
-		s.auth = s.newAuth(mcpMaxLength)
 		s.auth.RegisterRoutes(s.mux)
 		s.pinRegistered()
 		s.drainer = accounts.NewDrainer(s.Accounts, s.deleteStored)
@@ -239,10 +254,18 @@ func (s *Server) RegisterRoutes() {
 		}, s.drainer)
 		documentHandler.Uploaders = dash.Uploaders
 		dash.RegisterRoutes(s.mux)
+
+		// Every read of a paste goes through the gate before the store
+		s.views = accounts.NewViews(s.Accounts)
+		s.sweeper = accounts.NewSweeper(s.Accounts, s.drainer)
+		documentHandler.Access = dashboard.NewGate(s.Accounts, s.views, &dashboard.KeyLocks{},
+			time.Duration(s.config.EditWindow)*time.Second)
+		documentHandler.Readers = dash.Readers
 		log.Info().Int("registered_max_length", s.config.RegisteredMaxLength).
 			Int("registered_upload_quota", s.config.RegisteredUploadQuota).
 			Int64("user_storage_limit", s.config.UserStorageLimit).Int("user_max_pastes", s.config.UserMaxPastes).
-			Int("max_tokens_per_user", s.config.MaxTokensPerUser).Msg("Registered user limits configured")
+			Int("max_tokens_per_user", s.config.MaxTokensPerUser).Int("edit_window", s.config.EditWindow).
+			Msg("Registered user limits configured")
 		files, _ := s.storage.(*storage.FileStorage)
 		(&admin.Handler{
 			Auth:        s.auth,
@@ -405,6 +428,8 @@ func (s *Server) Start() {
 		s.stopAccounts = cancel
 		go s.auth.Run(ctx)
 		go s.drainer.Run(ctx)
+		go s.sweeper.Run(ctx)
+		go s.views.Run(ctx)
 	}
 
 	log.Info().Str("version", s.Version).Str("host", s.config.Host).Int("port", s.config.Port).Msg("Starting server")
@@ -437,6 +462,10 @@ func (s *Server) Shutdown(ctx context.Context) {
 	}
 
 	if s.Accounts != nil {
+		// The reads are over: the last counted views go in before the database closes
+		if err := s.views.Flush(ctx); err != nil {
+			log.Warn().Err(err).Msg("Failed to write the last paste views")
+		}
 		if err := s.Accounts.Close(); err != nil {
 			log.Error().Err(err).Msg("Failed to close the accounts database")
 		}

@@ -1079,7 +1079,7 @@ func TestWritePreviewJSON(t *testing.T) {
 			}
 			doc := &Document{ReadSeeker: strings.NewReader(text), Size: int64(len(text)), release: func() {}}
 			var got bytes.Buffer
-			require.NoError(t, writePreviewJSON(&got, doc, "k<ey>", limit))
+			require.NoError(t, writePreviewJSON(&got, doc, "k<ey>", limit, ""))
 
 			shown := text
 			if int64(len(text)) > limit {

@@ -21,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/armbian/ansi-hastebin/handler"
+	"github.com/armbian/ansi-hastebin/internal/auth"
 	"github.com/armbian/ansi-hastebin/internal/storage"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -158,6 +159,12 @@ type clientIPKey struct{}
 // uploadSlotKey marks a request that already holds an upload slot
 type uploadSlotKey struct{}
 
+// principalKey holds the account of a request with a bearer token
+type principalKey struct{}
+
+// dbBusyResponse is the JSON-RPC error sent when the token could not be checked
+const dbBusyResponse = `{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"Server busy, try again in a few seconds."}}`
+
 // busyResponse is the JSON-RPC error sent when every upload slot is in use
 const busyResponse = `{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"Server busy with other large uploads, try again in a few seconds."}}`
 
@@ -258,6 +265,12 @@ type Options struct {
 	// progress at the same time. 0 means DefaultMaxInflightPerClient, a
 	// negative value no limit.
 	MaxInflightPerClient int
+
+	// Bearer resolves the Authorization: Bearer header of a request, nil
+	// when accounts are off: the header is then ignored. A request with a
+	// bad token gets 401; one with a good token reads its owner's private
+	// pastes.
+	Bearer func(r *http.Request) (*auth.Principal, error)
 }
 
 // Handler is the HTTP handler of the MCP endpoint
@@ -372,6 +385,30 @@ func NewHandler(docs *handler.DocumentHandler, opts Options) *Handler {
 		ctx := context.WithValue(r.Context(), baseURLKey{}, docs.PublicURL(r.Host))
 		ctx = context.WithValue(ctx, requestKey{}, r.Context())
 		ctx = context.WithValue(ctx, clientIPKey{}, ip)
+
+		// A bearer token is resolved before the SDK runs: a bad one is 401,
+		// never anonymous
+		if opts.Bearer != nil && auth.HasBearer(r) {
+			p, err := opts.Bearer(r)
+			switch {
+			case errors.Is(err, auth.ErrInvalidToken):
+				auth.WriteInvalidToken(w, false)
+				return
+			case errors.Is(err, auth.ErrDisabled):
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				fmt.Fprintln(w, `{"message": "This account is disabled."}`)
+				return
+			case err != nil:
+				log.Error().Err(err).Msg("Failed to resolve the token of an MCP request")
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "5")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				fmt.Fprintln(w, dbBusyResponse)
+				return
+			}
+			ctx = context.WithValue(ctx, principalKey{}, p)
+		}
 
 		// The SDK reads and decodes the whole body before any tool runs, about 6
 		// times its size, so every body is charged that much as it arrives. A
@@ -1243,13 +1280,17 @@ func (s *service) open(ctx context.Context, keyOrURL string) (key string, doc *h
 	}
 
 	ip, _ := ctx.Value(clientIPKey{}).(string)
-	doc, err = s.docs.OpenDocumentFrom(ip, key, handler.ToolStreamMemory, handler.ToolReadCost)
+	p, _ := ctx.Value(principalKey{}).(*auth.Principal)
+	doc, err = s.docs.OpenDocumentAs(ctx, p, ip, key, handler.ToolStreamMemory, handler.ToolReadCost)
 	var banned *handler.BannedError
 	if errors.As(err, &banned) {
 		return "", nil, toolError("too many lookups of unknown keys from your address: paste reads are blocked, retry in %d seconds", handler.RetryAfterSeconds(banned.RetryAfter))
 	}
 	if errors.Is(err, storage.ErrNotFound) {
 		return "", nil, toolError("paste %q not found: it may have expired, or the key is wrong", key)
+	}
+	if errors.Is(err, handler.ErrRemoved) {
+		return "", nil, toolError("paste %q was removed by a moderator", key)
 	}
 	if errors.Is(err, handler.ErrMemoryBusy) {
 		log.Warn().Msg("MCP read refused, the memory budget is full")

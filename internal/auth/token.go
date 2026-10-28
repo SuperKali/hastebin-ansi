@@ -158,7 +158,10 @@ func WriteInvalidToken(w http.ResponseWriter, json bool) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
+	// A paste route has set its own, stricter one already
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	w.WriteHeader(http.StatusUnauthorized)
 	w.Write([]byte(`{"message": "The API token is invalid or revoked."}` + "\n"))
 }

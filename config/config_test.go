@@ -359,6 +359,7 @@ func TestNewConfig_InvalidValuesAreFatal(t *testing.T) {
 		{"USER_STORAGE_LIMIT", "5GiB", "Failed to parse USER_STORAGE_LIMIT"},
 		{"USER_MAX_PASTES", "-2", "user_max_pastes must be 1 or more"},
 		{"MAX_TOKENS_PER_USER", "1001", "max_tokens_per_user must be 1 to 1000"},
+		{"EDIT_WINDOW", "-1", "edit_window must be 0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.env, func(t *testing.T) {
@@ -469,4 +470,27 @@ func TestEffectiveRedactsSecrets(t *testing.T) {
 	require.Equal(t, 2592000, values["session_ttl"])
 	require.NotContains(t, fmt.Sprint(cfg.Effective()), "very-secret-value")
 	require.NotContains(t, fmt.Sprint(cfg.Effective()), "db-password")
+}
+
+func TestNewConfig_EditWindow(t *testing.T) {
+	require.Equal(t, 600, NewConfig("nonexistent.yaml").EditWindow)
+
+	// A file without the key keeps the default; 0 turns editing off
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("port: 7777\n"), 0o600))
+	require.Equal(t, 600, NewConfig(path).EditWindow)
+	require.NoError(t, os.WriteFile(path, []byte("edit_window: 0\n"), 0o600))
+	require.Equal(t, 0, NewConfig(path).EditWindow)
+
+	t.Setenv("EDIT_WINDOW", "120")
+	cfg := NewConfig(path)
+	require.Equal(t, 120, cfg.EditWindow)
+	values := map[string]any{}
+	for _, s := range cfg.Effective() {
+		values[s.Key] = s.Value
+	}
+	require.Equal(t, 120, values["edit_window"])
+	t.Setenv("EDIT_WINDOW", "0")
+	require.Equal(t, 0, NewConfig("nonexistent.yaml").EditWindow)
 }

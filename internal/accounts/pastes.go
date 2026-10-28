@@ -476,16 +476,7 @@ func (db *DB) DeletePastes(ctx context.Context, userID int64, keys []string) (de
 			notFound = append(notFound, key)
 			continue
 		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO delete_queue (store_key, enqueued_at) SELECT store_key, ? FROM paste_revisions WHERE paste_key = ?
-			ON CONFLICT (store_key) DO NOTHING`, now, key); err != nil {
-			return nil, nil, err
-		}
-		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO delete_queue (store_key, enqueued_at) VALUES (?, ?) ON CONFLICT (store_key) DO NOTHING", key, now); err != nil {
-			return nil, nil, err
-		}
-		if _, err := tx.ExecContext(ctx, "DELETE FROM pastes WHERE key = ? AND user_id = ?", key, userID); err != nil {
+		if err := deletePaste(ctx, tx, key, now); err != nil {
 			return nil, nil, err
 		}
 		deleted = append(deleted, key)
