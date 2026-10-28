@@ -1,0 +1,162 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL PANEL - PTERODACTYL.IO",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-10-28T00:00:00+00:00",
+    "name": "hastebin-ansi",
+    "author": "freelance@harrydev.me",
+    "description": "Hastebin paste server with ANSI color support. The server image is built by GitHub Actions and pulled again when the server restarts, so updates arrive on restart. The install script only writes config.yaml and creates the data folder.",
+    "features": null,
+    "docker_images": {
+        "ghcr.io/superkali/ansi-hastebin:pterodactyl": "ghcr.io/superkali/ansi-hastebin:pterodactyl"
+    },
+    "file_denylist": [],
+    "startup": "hastebin --config config.yaml",
+    "config": {
+        "files": "{\n    \"config.yaml\": {\n        \"parser\": \"yaml\",\n        \"find\": {\n            \"host\": \"0.0.0.0\",\n            \"port\": \"{{server.build.default.port}}\"\n        }\n    }\n}",
+        "startup": "{\n    \"done\": \"Starting server\"\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/ash\n# hastebin-ansi install script.\n# Nothing is compiled here: the server binary ships in the Docker image,\n# which GitHub Actions builds. This only prepares the server folder.\nset -e\ncd /mnt/server\n\nDATA_DIR=\"${STORAGE_FILE_PATH:-data}\"\n\n# Remove leftovers of the old egg, which built from source.\n# Only these exact names are removed. The data dir is never touched.\nfor f in hastebin hastebin-ansi static cmd config handler internal .github .git \\\n    go.mod go.sum Dockerfile .dockerignore .gitignore docker-compose.yaml docker-compose.yml \\\n    README.md LICENSE about.md config.yaml.example config.example.yaml; do\n    if [ \"$f\" = \"$DATA_DIR\" ] || [ \"$f\" = \"data\" ]; then\n        continue\n    fi\n    if [ -e \"$f\" ] || [ -L \"$f\" ]; then\n        echo \"Removing old build file: $f\"\n        rm -rf \"./$f\"\n    fi\ndone\n\n# Keep the previous config as a backup\nif [ -f config.yaml ]; then\n    echo \"Saving the old config.yaml as config.yaml.bak\"\n    mv -f config.yaml config.yaml.bak\nfi\n\n# Fresh config. Egg variables (environment) override these values at startup.\ncat > config.yaml <<'EOF'\nhost: \"0.0.0.0\"\nport: 7777\nkey_length: 10\nmax_length: 4000000\n# Paste lifetime in seconds, 0 means pastes never expire\nexpiration: 0\nkey_generator: \"phonetic\"\n\nstorage:\n  type: \"file\"\n  file_path: \"data\"\n\ndocuments:\n  - key: \"about\"\n    path: \"/opt/hastebin/about.md\"\n\nrate_limiting:\n  enable: true\n  limit: 500\n  window: 15\n\nlogging:\n  level: \"info\"\n  colorize: false\nEOF\n\nmkdir -p data\necho \"Install done. The server binary comes from the Docker image.\"\n",
+            "container": "alpine:3.22",
+            "entrypoint": "ash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Storage Type",
+            "description": "Where pastes are stored: file, redis, memcached, mongodb, postgres or s3.",
+            "env_variable": "STORAGE_TYPE",
+            "default_value": "file",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:file,redis,memcached,mongodb,postgres,s3",
+            "field_type": "text"
+        },
+        {
+            "name": "Storage File Path",
+            "description": "Folder for pastes when Storage Type is file, relative to the server folder.",
+            "env_variable": "STORAGE_FILE_PATH",
+            "default_value": "data",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Key Length",
+            "description": "Length of the paste keys in the URL.",
+            "env_variable": "KEY_LENGTH",
+            "default_value": "10",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:4,64",
+            "field_type": "text"
+        },
+        {
+            "name": "Max Length",
+            "description": "Largest paste accepted, in bytes.",
+            "env_variable": "MAX_LENGTH",
+            "default_value": "4000000",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:1",
+            "field_type": "text"
+        },
+        {
+            "name": "Key Generator",
+            "description": "How paste keys are made: phonetic (easy to read) or random.",
+            "env_variable": "KEY_GENERATOR",
+            "default_value": "phonetic",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:phonetic,random",
+            "field_type": "text"
+        },
+        {
+            "name": "Logging Level",
+            "description": "How much the server logs.",
+            "env_variable": "LOGGING_LEVEL",
+            "default_value": "info",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:trace,debug,info,warn,error",
+            "field_type": "text"
+        },
+        {
+            "name": "Rate Limit Enable",
+            "description": "Limit the number of requests per client IP.",
+            "env_variable": "RATE_LIMITING_ENABLE",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Rate Limit Requests",
+            "description": "Requests allowed per client IP in each window.",
+            "env_variable": "RATE_LIMITING_LIMIT",
+            "default_value": "500",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:1",
+            "field_type": "text"
+        },
+        {
+            "name": "Rate Limit Window",
+            "description": "Length of the rate limit window, in seconds.",
+            "env_variable": "RATE_LIMITING_WINDOW",
+            "default_value": "15",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:1",
+            "field_type": "text"
+        },
+        {
+            "name": "Trusted Proxies",
+            "description": "Comma separated IPs or CIDRs of the reverse proxy allowed to pass the real client IP, for example the address cloudflared comes from (172.18.0.1). Only safe if the server port is not reachable directly from the internet. Leave empty to ignore client IP headers.",
+            "env_variable": "TRUSTED_PROXIES",
+            "default_value": "172.18.0.1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:512",
+            "field_type": "text"
+        },
+        {
+            "name": "Real IP Header",
+            "description": "Header that carries the client IP from the trusted proxy: CF-Connecting-IP for cloudflared, X-Real-IP, or X-Forwarded-For.",
+            "env_variable": "REAL_IP_HEADER",
+            "default_value": "CF-Connecting-IP",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|in:CF-Connecting-IP,X-Real-IP,X-Forwarded-For",
+            "field_type": "text"
+        },
+        {
+            "name": "Base URL",
+            "description": "Public URL used in links returned by /log, for example https://paste.example.com. Leave empty to use the request host.",
+            "env_variable": "BASE_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|url",
+            "field_type": "text"
+        },
+        {
+            "name": "Metrics Address",
+            "description": "Address for a separate Prometheus metrics listener, for example 127.0.0.1:9100. Leave empty to turn metrics off.",
+            "env_variable": "METRICS_ADDR",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        }
+    ]
+}

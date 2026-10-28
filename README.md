@@ -408,6 +408,27 @@ Here is a list of all the environment variables
 |  RATELIMITS_BLACKLIST_EVERY_SECONDS  |                                       |     By default client names in the blacklist will be subject to 0 requests per hours     |
 |         RATELIMITS_BLACKLIST         | example1.blacklist,example2.blacklist |           Comma separated list of the clients which are in the blacklistpool.            |
 
+## Pterodactyl
+
+The egg in `pterodactyl/egg-hastebin-ansi.json` runs the image
+`ghcr.io/superkali/ansi-hastebin:pterodactyl`, which GitHub Actions builds for
+amd64 and arm64. Nothing is compiled on the node.
+
+1. Import the egg in the panel (Admin, Nests, Import Egg).
+2. Make the GHCR package public (GitHub, Packages, ansi-hastebin, Package
+   settings), or Wings cannot pull it.
+3. Create the server. Wings pulls the image again when the server restarts, so
+   updates arrive on restart.
+
+Moving from the old egg that built from source: switch the server to the new egg
+and press Reinstall. The install script removes the old build files, saves your
+`config.yaml` as `config.yaml.bak` and writes a new one. The `data/` folder is kept.
+
+Behind cloudflared, set `TRUSTED_PROXIES` to the address cloudflared comes from
+(often `172.18.0.1`) and `REAL_IP_HEADER` to `CF-Connecting-IP`. This is safe only
+if the server port is not reachable directly from the internet, so bind the
+allocation to `127.0.0.1` or firewall it.
+
 ## Author
 
 John Crepezzi <john.crepezzi@gmail.com>
