@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
@@ -58,6 +59,10 @@ type StorageConfig struct {
 	// FilePath is the file path to use for the "file" storage backend
 	// This property is only used for the "file" storage backend
 	FilePath string `yaml:"file_path"`
+
+	// TLS is a flag to use https:// instead of http:// for the storage endpoint
+	// This property is only used for the "s3" storage backend
+	TLS bool `yaml:"tls"`
 }
 
 type DocumentConfig struct {
@@ -88,7 +93,7 @@ type Config struct {
 	// StaticMaxAge is the maximum age of static assets
 	StaticMaxAge int `yaml:"static_max_age"`
 
-	// Expiration is the maximum lifetime of paste entry
+	// Expiration is the maximum lifetime of paste entry, in seconds
 	// 0 means there will be no expiration.
 	// "file" and "s3" storages don't support expiration control.
 	Expiration int `yaml:"expiration"`
@@ -99,6 +104,22 @@ type Config struct {
 	// KeyGenerator is the key generator to use
 	// Available key generators are: "random", "phonetic"
 	KeyGenerator string `yaml:"key_generator"`
+
+	// TrustedProxies is the list of proxy CIDRs or IPs allowed to set the client IP
+	// through CF-Connecting-IP, X-Real-IP or X-Forwarded-For. Empty means no proxy is trusted.
+	TrustedProxies []string `yaml:"trusted_proxies"`
+
+	// RealIPHeader is the only header read for the client IP from trusted proxies,
+	// e.g. "CF-Connecting-IP" or "X-Real-IP". Empty means X-Forwarded-For, read right to left.
+	RealIPHeader string `yaml:"real_ip_header"`
+
+	// MetricsAddr is the address of the separate Prometheus metrics listener (e.g. "127.0.0.1:9100")
+	// Empty means metrics are disabled.
+	MetricsAddr string `yaml:"metrics_addr"`
+
+	// BaseURL is the public URL used in links returned by /log (e.g. "https://paste.example.com")
+	// Empty means the request Host header is used.
+	BaseURL string `yaml:"base_url"`
 
 	// Storage is the storage backend to use
 	// Available storage backends are: "redis", "file", "memcached", "mongodb", "s3", "postgres"
@@ -135,6 +156,11 @@ var DefaultConfig = &Config{
 			Path: "about.md",
 		},
 	},
+}
+
+// ExpirationDuration returns the paste expiration, which is configured in seconds
+func (c *Config) ExpirationDuration() time.Duration {
+	return time.Duration(c.Expiration) * time.Second
 }
 
 // NewConfig creates a new Config instance
@@ -241,6 +267,35 @@ func NewConfig(configFile string) *Config {
 		cfg.Storage.FilePath = storageFilePath
 	}
 
+	if storageTLS := os.Getenv("STORAGE_TLS"); storageTLS != "" {
+		storageTLSBool, err := strconv.ParseBool(storageTLS)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to parse STORAGE_TLS environment variable")
+		}
+		cfg.Storage.TLS = storageTLSBool
+	}
+
+	if trustedProxies := os.Getenv("TRUSTED_PROXIES"); trustedProxies != "" {
+		cfg.TrustedProxies = nil
+		for _, proxy := range strings.Split(trustedProxies, ",") {
+			if proxy = strings.TrimSpace(proxy); proxy != "" {
+				cfg.TrustedProxies = append(cfg.TrustedProxies, proxy)
+			}
+		}
+	}
+
+	if realIPHeader := os.Getenv("REAL_IP_HEADER"); realIPHeader != "" {
+		cfg.RealIPHeader = realIPHeader
+	}
+
+	if metricsAddr := os.Getenv("METRICS_ADDR"); metricsAddr != "" {
+		cfg.MetricsAddr = metricsAddr
+	}
+
+	if baseURL := os.Getenv("BASE_URL"); baseURL != "" {
+		cfg.BaseURL = baseURL
+	}
+
 	if loggingLevel := os.Getenv("LOGGING_LEVEL"); loggingLevel != "" {
 		cfg.Logging.Level = loggingLevel
 	}
@@ -329,6 +384,9 @@ func NewConfig(configFile string) *Config {
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = DefaultConfig.Logging.Level
 	}
+
+	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
+	cfg.RealIPHeader = strings.TrimSpace(cfg.RealIPHeader)
 
 	return cfg
 }

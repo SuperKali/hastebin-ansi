@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"testing"
 
@@ -34,7 +36,8 @@ func TestFileStorage(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = store.Get("testKey2", false)
-	require.True(t, os.IsNotExist(err))
+	require.ErrorIs(t, err, ErrNotFound)
+	require.True(t, errors.Is(err, fs.ErrNotExist))
 
 	require.NoError(t, store.Close())
 }

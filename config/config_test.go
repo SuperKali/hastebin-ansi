@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -79,4 +80,56 @@ logging:
 	require.Equal(t, "mongo.example.com", cfg.Storage.Host)
 	require.Equal(t, 27017, cfg.Storage.Port)
 	require.Equal(t, "warn", cfg.Logging.Level)
+}
+
+func TestNewConfig_SecurityOptions(t *testing.T) {
+	t.Setenv("TRUSTED_PROXIES", "172.18.0.0/16, 10.0.0.1,")
+	t.Setenv("METRICS_ADDR", "127.0.0.1:9100")
+	t.Setenv("BASE_URL", "https://paste.example.com/")
+	t.Setenv("STORAGE_TLS", "true")
+	t.Setenv("REAL_IP_HEADER", "CF-Connecting-IP")
+
+	cfg := NewConfig("nonexistent.yaml")
+
+	require.Equal(t, "CF-Connecting-IP", cfg.RealIPHeader)
+
+	require.Equal(t, []string{"172.18.0.0/16", "10.0.0.1"}, cfg.TrustedProxies)
+	require.Equal(t, "127.0.0.1:9100", cfg.MetricsAddr)
+	require.Equal(t, "https://paste.example.com", cfg.BaseURL)
+	require.True(t, cfg.Storage.TLS)
+}
+
+func TestNewConfig_SecurityDefaults(t *testing.T) {
+	cfg := NewConfig("nonexistent.yaml")
+
+	require.Empty(t, cfg.TrustedProxies)
+	require.Empty(t, cfg.RealIPHeader)
+	require.Empty(t, cfg.MetricsAddr)
+	require.Empty(t, cfg.BaseURL)
+	require.False(t, cfg.Storage.TLS)
+}
+
+func TestConfig_ExpirationDuration(t *testing.T) {
+	yamlContent := `
+expiration: 3600
+trusted_proxies:
+  - "172.18.0.0/16"
+storage:
+  tls: true
+`
+	tmpFile, err := os.CreateTemp("", "config_test_*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	_, err = tmpFile.Write([]byte(yamlContent))
+	require.NoError(t, err)
+	tmpFile.Close()
+
+	cfg := NewConfig(tmpFile.Name())
+
+	require.Equal(t, time.Hour, cfg.ExpirationDuration())
+	require.Equal(t, []string{"172.18.0.0/16"}, cfg.TrustedProxies)
+	require.True(t, cfg.Storage.TLS)
+
+	require.Equal(t, time.Duration(0), (&Config{}).ExpirationDuration())
 }

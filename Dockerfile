@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /src
 
@@ -19,7 +19,7 @@ COPY --from=builder /etc/ssl/certs /etc/ssl/certs
 # Copy the binary from the builder stage
 COPY --from=builder /src/hastebin /bin/hastebin
 
-# Set the user and group
-USER 0:0
+# Run as the distroless nonroot user
+USER 65532:65532
 
 CMD ["/bin/hastebin", "--config", "/app/config.yaml"]

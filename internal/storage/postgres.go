@@ -2,9 +2,13 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"net"
+	"net/url"
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
@@ -15,15 +19,15 @@ const deleteSQLQuery = "DELETE FROM entries WHERE id = $1"
 const updateSQLQuery = "UPDATE entries SET expiration = $1 WHERE id = $2"
 
 type PostgresStorage struct {
-	pool       *pgxpool.Pool
+	pool *pgxpool.Pool
+	// expiration is the paste lifetime in seconds, 0 means no expiration
 	expiration int
 }
 
 var _ Storage = (*PostgresStorage)(nil)
 
-func NewPostgresStorage(host string, port int, username string, passowrd string, database string, expiration int) *PostgresStorage {
-	dsn := "postgres://" + username + ":" + passowrd + "@" + host + ":" + strconv.Itoa(port) + "/" + database
-	pool, err := pgxpool.New(context.Background(), dsn)
+func NewPostgresStorage(host string, port int, username string, password string, database string, expiration int) *PostgresStorage {
+	pool, err := pgxpool.New(context.Background(), postgresDSN(host, port, username, password, database))
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to connect to PostgreSQL")
 	}
@@ -42,11 +46,31 @@ func NewPostgresStorage(host string, port int, username string, passowrd string,
 	return &PostgresStorage{pool: pool, expiration: expiration}
 }
 
+// postgresDSN builds the connection URL, escaping special characters in credentials
+func postgresDSN(host string, port int, username string, password string, database string) string {
+	u := url.URL{
+		Scheme: "postgres",
+		Host:   net.JoinHostPort(host, strconv.Itoa(port)),
+		Path:   "/" + database,
+	}
+	if username != "" || password != "" {
+		u.User = url.UserPassword(username, password)
+	}
+	return u.String()
+}
+
+// expiresAt returns the expiration unix timestamp for a paste, 0 means no expiration
+func (s *PostgresStorage) expiresAt() int64 {
+	if s.expiration <= 0 {
+		return 0
+	}
+	return time.Now().Add(time.Duration(s.expiration) * time.Second).Unix()
+}
+
 func (s *PostgresStorage) Set(key string, value string, skip_expiration bool) error {
 	ctx := context.Background() // TODO: Add timeout control
 
-	now := time.Now()
-	expiration := now.Add(time.Duration(s.expiration)).Unix()
+	expiration := s.expiresAt()
 	if skip_expiration {
 		expiration = 0
 	}
@@ -63,6 +87,9 @@ func (s *PostgresStorage) Get(key string, skip_expiration bool) (string, error) 
 	var expiration int64
 
 	err := s.pool.QueryRow(ctx, getSQLQuery, key).Scan(&id, &value, &expiration)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", notFound(err)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -73,12 +100,12 @@ func (s *PostgresStorage) Get(key string, skip_expiration bool) (string, error) 
 		if err != nil {
 			return "", err
 		}
-		return "", nil
+		return "", ErrNotFound
 	}
 
-	// Update expiration
-	if !skip_expiration {
-		_, err = s.pool.Exec(ctx, updateSQLQuery, time.Now().Add(time.Duration(s.expiration)).Unix(), id)
+	// Update expiration, only for entries that expire
+	if !skip_expiration && expiration != 0 && s.expiration > 0 {
+		_, err = s.pool.Exec(ctx, updateSQLQuery, s.expiresAt(), id)
 		if err != nil {
 			return "", err
 		}

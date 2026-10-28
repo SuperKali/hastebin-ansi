@@ -37,7 +37,7 @@ func setupMinio(t *testing.T) (string, int, func()) {
 	port, err := c.MappedPort(ctx, "9000")
 	require.NoError(t, err)
 
-	return host, port.Int(), func() {
+	return host, int(port.Num()), func() {
 		c.Terminate(ctx)
 	}
 }
@@ -46,7 +46,7 @@ func TestS3Storage(t *testing.T) {
 	host, port, cleanup := setupMinio(t)
 	defer cleanup()
 
-	store := NewS3Storage(host, port, minioUser, minioPass, minioRegion, minioBucket)
+	store := NewS3Storage(host, port, minioUser, minioPass, minioRegion, minioBucket, false)
 
 	// Test Set
 	err := store.Set("testKey", "testValue", false)

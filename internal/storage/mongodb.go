@@ -2,13 +2,14 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strconv"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
-	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
@@ -93,7 +94,7 @@ func (s *MongoDBStorage) Set(key string, value string, skip_expiration bool) err
 	valueBytes := []byte(value)
 
 	expiration := time.Now().Add(s.expiration)
-	if skip_expiration {
+	if skip_expiration || s.expiration <= 0 {
 		expiration = time.Time{}
 	}
 
@@ -104,8 +105,9 @@ func (s *MongoDBStorage) Set(key string, value string, skip_expiration bool) err
 		Expiration: expiration,
 	}
 
-	// Insert item
-	if _, err := s.collection.InsertOne(ctx, i); err != nil {
+	// Insert or replace item, so static documents can be set again on restart
+	filter := bson.M{"key": key}
+	if _, err := s.collection.ReplaceOne(ctx, filter, i, options.Replace().SetUpsert(true)); err != nil {
 		return err
 	}
 
@@ -119,6 +121,9 @@ func (s *MongoDBStorage) Get(key string, skip_expiration bool) (string, error) {
 	filter := bson.M{"key": key}
 	var i item
 	if err := s.collection.FindOne(ctx, filter).Decode(&i); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return "", notFound(err)
+		}
 		return "", err
 	}
 
@@ -131,8 +136,8 @@ func (s *MongoDBStorage) Get(key string, skip_expiration bool) (string, error) {
 		return "", ErrNotFound
 	}
 
-	// Update expiration
-	if !skip_expiration {
+	// Update expiration, only for entries that expire
+	if !skip_expiration && !i.Expiration.IsZero() && s.expiration > 0 {
 		i.Expiration = time.Now().Add(s.expiration)
 		update := bson.M{"$set": bson.M{"expiration": i.Expiration}}
 		if _, err := s.collection.UpdateOne(ctx, filter, update); err != nil {

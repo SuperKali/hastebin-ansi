@@ -45,7 +45,7 @@ func setupMongoContainer(t *testing.T) (string, int, func()) {
 		require.NoError(t, mongoContainer.Terminate(ctx))
 	}
 
-	return host, port.Int(), cleanup
+	return host, int(port.Num()), cleanup
 }
 
 func TestMongoDBStorage(t *testing.T) {
@@ -73,7 +73,8 @@ func TestMongoDBStorage(t *testing.T) {
 	// Test key not existing
 	val, err = store.Get("testKey2", false)
 	require.Equal(t, "", val)
-	require.ErrorIs(t, mongo.ErrNoDocuments, err)
+	require.ErrorIs(t, err, mongo.ErrNoDocuments)
+	require.ErrorIs(t, err, ErrNotFound)
 
 	require.NoError(t, store.Close())
 }
@@ -94,11 +95,18 @@ func TestMongoDBStorageSkipExpiration(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "persistentValue", val)
 
+	// A normal Get must not add an expiration to the entry
+	_, err = store.Get("persistentKey", false)
+	require.NoError(t, err)
+
 	// Wait past expiration but skip expiration should still work
 	time.Sleep(time.Duration(expiration+1) * time.Second)
 	val, err = store.Get("persistentKey", true)
 	require.NoError(t, err)
 	require.Equal(t, "persistentValue", val)
+
+	// Setting the same key again (static documents on restart) must not fail
+	require.NoError(t, store.Set("persistentKey", "persistentValue", true))
 
 	require.NoError(t, store.Close())
 }

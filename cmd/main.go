@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"io"
+	"io/fs"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,7 +21,7 @@ import (
 
 func handleConfig(location string) (*config.Config, storage.Storage, keygenerator.KeyGenerator) {
 	cfg := config.NewConfig(location)
-	exp := time.Duration(cfg.Expiration)
+	exp := cfg.ExpirationDuration()
 
 	var pasteStorage storage.Storage
 	switch cfg.Storage.Type {
@@ -34,7 +36,7 @@ func handleConfig(location string) (*config.Config, storage.Storage, keygenerato
 	case "postgres":
 		pasteStorage = storage.NewPostgresStorage(cfg.Storage.Host, cfg.Storage.Port, cfg.Storage.Username, cfg.Storage.Password, cfg.Storage.Database, int(cfg.Expiration))
 	case "s3":
-		pasteStorage = storage.NewS3Storage(cfg.Storage.Host, cfg.Storage.Port, cfg.Storage.Username, cfg.Storage.Password, cfg.Storage.AWSRegion, cfg.Storage.Bucket)
+		pasteStorage = storage.NewS3Storage(cfg.Storage.Host, cfg.Storage.Port, cfg.Storage.Username, cfg.Storage.Password, cfg.Storage.AWSRegion, cfg.Storage.Bucket, cfg.Storage.TLS)
 	default:
 		log.Fatal().Str("storage_type", cfg.Storage.Type).Msg("Unknown storage type")
 		return nil, nil, nil
@@ -53,7 +55,12 @@ func handleConfig(location string) (*config.Config, storage.Storage, keygenerato
 		}
 		file.Close()
 
-		if err := pasteStorage.Set(doc.Key, string(content), false); err != nil {
+		// Static documents never expire
+		if err := pasteStorage.Set(doc.Key, string(content), true); err != nil {
+			if errors.Is(err, fs.ErrPermission) {
+				log.Fatal().Err(err).Str("key", doc.Key).Str("path", cfg.Storage.FilePath).
+					Msg("Failed to set document: the data dir must be writable by uid 65532 (chown -R 65532:65532 <data dir>)")
+			}
 			log.Fatal().Err(err).Str("key", doc.Key).Msg("Failed to set document")
 		}
 	}

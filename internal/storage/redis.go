@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"time"
 
@@ -39,7 +40,7 @@ func (s *RedisStorage) Set(key string, value string, skip_expiration bool) error
 	ctx := context.Background() // TODO: Add timeout control
 
 	expiry := s.expiration
-	if skip_expiration {
+	if skip_expiration || expiry < 0 {
 		expiry = 0
 	}
 
@@ -50,13 +51,18 @@ func (s *RedisStorage) Get(key string, skip_expiration bool) (string, error) {
 	ctx := context.Background() // TODO: Add timeout control
 
 	res, err := s.client.Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", notFound(err)
+	}
 	if err != nil {
 		return "", err
 	}
 
-	// Update expiration
-	if !skip_expiration {
-		s.client.Expire(ctx, key, s.expiration)
+	// Update expiration, only for keys that already expire
+	if !skip_expiration && s.expiration > 0 {
+		if ttl, err := s.client.TTL(ctx, key).Result(); err == nil && ttl > 0 {
+			s.client.Expire(ctx, key, s.expiration)
+		}
 	}
 
 	return res, nil

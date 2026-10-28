@@ -35,7 +35,7 @@ func setupMemcachedContainer(t *testing.T) (string, int, func()) {
 		require.NoError(t, memcachedContainer.Terminate(ctx))
 	}
 
-	return host, port.Int(), cleanup
+	return host, int(port.Num()), cleanup
 }
 
 func TestMemcachedStorage(t *testing.T) {
@@ -64,7 +64,8 @@ func TestMemcachedStorage(t *testing.T) {
 	require.NoError(t, err) // Should still exist due to refresh
 
 	_, err = store.Get("testKey2", false)
-	require.ErrorIs(t, memcache.ErrCacheMiss, err) // Should not exist
+	require.ErrorIs(t, err, memcache.ErrCacheMiss) // Should not exist
+	require.ErrorIs(t, err, ErrNotFound)
 
 	require.NoError(t, store.Close())
 }
@@ -84,6 +85,10 @@ func TestMemcachedStorageSkipExpiration(t *testing.T) {
 	val, err := store.Get("persistentKey", true)
 	require.NoError(t, err)
 	require.Equal(t, "persistentValue", val)
+
+	// A normal Get must not add an expiration to the item
+	_, err = store.Get("persistentKey", false)
+	require.NoError(t, err)
 
 	// Wait past expiration but skip expiration should still work
 	time.Sleep(time.Duration(expiration+1) * time.Second)

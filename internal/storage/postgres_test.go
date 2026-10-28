@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"net/url"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ func setupTestContainer(t *testing.T) (string, int, func()) {
 	port, err := container.MappedPort(context.Background(), "5432")
 	require.NoError(t, err)
 
-	return host, port.Int(), func() {
+	return host, int(port.Num()), func() {
 		require.NoError(t, container.Terminate(context.Background()))
 	}
 }
@@ -39,7 +40,8 @@ func TestPostgresStorage(t *testing.T) {
 	host, port, cleanup := setupTestContainer(t)
 	defer cleanup()
 
-	store := NewPostgresStorage(host, port, "test", "test", "testdb", 2)
+	const expiration = 2 // seconds
+	store := NewPostgresStorage(host, port, "test", "test", "testdb", expiration)
 
 	err := store.Set("key1", "value1", false)
 	require.NoError(t, err)
@@ -51,10 +53,10 @@ func TestPostgresStorage(t *testing.T) {
 	time.Sleep(3 * time.Second)
 
 	val, err = store.Get("key1", false)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrNotFound)
 	require.Empty(t, val)
 
-	// Test with skip expiration
+	// Get with skip_expiration does not refresh the expiration
 	err = store.Set("key1", "value1", false)
 	require.NoError(t, err)
 
@@ -62,11 +64,48 @@ func TestPostgresStorage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "value1", val)
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(3 * time.Second)
 
 	val, err = store.Get("key1", false)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrNotFound)
 	require.Empty(t, val)
 
+	// Entries set with skip_expiration never expire, even after a normal Get
+	err = store.Set("static", "about", true)
+	require.NoError(t, err)
+
+	val, err = store.Get("static", false)
+	require.NoError(t, err)
+	require.Equal(t, "about", val)
+
+	time.Sleep(3 * time.Second)
+
+	val, err = store.Get("static", false)
+	require.NoError(t, err)
+	require.Equal(t, "about", val)
+
 	require.NoError(t, store.Close())
+}
+
+func TestPostgresStorage_NotFound(t *testing.T) {
+	host, port, cleanup := setupTestContainer(t)
+	defer cleanup()
+
+	store := NewPostgresStorage(host, port, "test", "test", "testdb", 0)
+
+	_, err := store.Get("missing", false)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	require.NoError(t, store.Close())
+}
+
+func TestPostgresDSN(t *testing.T) {
+	dsn := postgresDSN("db.example.com", 5432, "user@corp", "p@ss:w/rd?#%", "pastes")
+	require.Equal(t, "postgres://user%40corp:p%40ss%3Aw%2Frd%3F%23%25@db.example.com:5432/pastes", dsn)
+
+	u, err := url.Parse(dsn)
+	require.NoError(t, err)
+	password, _ := u.User.Password()
+	require.Equal(t, "user@corp", u.User.Username())
+	require.Equal(t, "p@ss:w/rd?#%", password)
 }

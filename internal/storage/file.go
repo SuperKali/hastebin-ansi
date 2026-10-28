@@ -29,8 +29,8 @@ func NewFileStorage(path string, _ time.Duration) Storage {
 	return &FileStorage{path: path}
 }
 
-func (fs *FileStorage) Set(key string, value string, skip_expiration bool) error {
-	dst := filepath.Join(fs.path, md5Hex(key))
+func (s *FileStorage) Set(key string, value string, skip_expiration bool) error {
+	dst := filepath.Join(s.path, md5Hex(key))
 
 	file, err := os.Create(dst)
 	if err != nil {
@@ -43,9 +43,12 @@ func (fs *FileStorage) Set(key string, value string, skip_expiration bool) error
 	return err
 }
 
-func (fs *FileStorage) Get(key string, skip_expiration bool) (string, error) {
-	dst := filepath.Join(fs.path, md5Hex(key))
+func (s *FileStorage) Get(key string, skip_expiration bool) (string, error) {
+	dst := filepath.Join(s.path, md5Hex(key))
 	file, err := os.ReadFile(dst)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", notFound(err)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -53,6 +56,6 @@ func (fs *FileStorage) Get(key string, skip_expiration bool) (string, error) {
 	return string(file), nil
 }
 
-func (fs *FileStorage) Close() error {
+func (s *FileStorage) Close() error {
 	return nil
 }

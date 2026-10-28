@@ -32,7 +32,7 @@ func setupRedisContainer(t *testing.T) (string, int, func()) {
 	port, err := container.MappedPort(ctx, "6379")
 	require.NoError(t, err)
 
-	return host, port.Int(), func() {
+	return host, int(port.Num()), func() {
 		require.NoError(t, container.Terminate(ctx))
 	}
 }
@@ -86,6 +86,14 @@ func TestRedisStorage_SetAndGet(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, -1*time.Nanosecond, ttlAfterGetNoExpire) // -1ns means no expiration
 
+	// A normal Get must not add a TTL to a key stored without expiration
+	_, err = storage.Get(keyNoExpire, false)
+	require.NoError(t, err)
+
+	ttlAfterNormalGet, err := storage.client.TTL(context.Background(), keyNoExpire).Result()
+	require.NoError(t, err)
+	require.Equal(t, -1*time.Nanosecond, ttlAfterNormalGet)
+
 	require.NoError(t, storage.Close())
 }
 
@@ -98,7 +106,8 @@ func TestRedisStorage_GetNonExistentKey(t *testing.T) {
 
 	_, err := storage.Get("nonExistentKey", false)
 	require.Error(t, err)
-	require.Equal(t, redis.Nil, err)
+	require.ErrorIs(t, err, redis.Nil)
+	require.ErrorIs(t, err, ErrNotFound)
 
 	require.NoError(t, storage.Close())
 }

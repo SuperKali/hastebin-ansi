@@ -57,6 +57,36 @@ STDOUT.  Check the README there for more details and usages.
 * `logging` - logging preferences
 * `keyGenerator` - key generator options (see below)
 * `rateLimits` - settings for rate limiting (see below)
+* `expiration` - paste lifetime in seconds, refreshed on each view. `0` (the default)
+  means pastes never expire. File and S3 storage ignore it.
+* `trusted_proxies` - list of proxy CIDRs or IPs allowed to pass the client IP (see below)
+* `real_ip_header` - the one header read for the client IP from trusted proxies.
+  Empty (the default) means `X-Forwarded-For`.
+* `metrics_addr` - address of a separate Prometheus listener, for example
+  `127.0.0.1:9100`. Empty (the default) turns metrics off.
+* `base_url` - public URL used in links returned by `/log`, for example
+  `https://paste.example.com`. Empty means `https://` plus the request Host header.
+
+## Reverse proxies and client IP
+
+By default the server ignores `CF-Connecting-IP`, `X-Real-IP` and `X-Forwarded-For`,
+so clients cannot fake their IP in logs or in the rate limiter.
+
+If the server runs behind a reverse proxy, list only the proxy's own address in
+`trusted_proxies` (or `TRUSTED_PROXIES`, comma separated). Only requests coming
+from those addresses may set the client IP. By default the client IP is read from
+`X-Forwarded-For`, right to left. If your proxy sets a single header instead, name
+it in `real_ip_header` (or `REAL_IP_HEADER`), for example `CF-Connecting-IP` or
+`X-Real-IP`. Then only that header is read.
+
+Behind Docker or Pterodactyl the proxy often reaches the container through the
+Docker gateway, for example `172.18.0.1`. Trusting the gateway is safe only when the
+container port cannot be reached directly from the internet. Docker's port
+forwarding makes direct clients arrive from the gateway too, so firewall the port
+or bind the allocation to `127.0.0.1`.
+
+Prometheus metrics are no longer served on the public port. Set `metrics_addr`
+to expose them on a separate, private address.
 
 ## Rate Limiting
 
@@ -294,6 +324,15 @@ docker build --tag haste-server .
 
 ### Run container
 
+The image runs as the distroless nonroot user (uid 65532). The paste data
+directory must be writable by that user. When upgrading from an older image,
+the existing data is owned by root and startup fails with "permission denied".
+Fix it once with:
+
+```bash
+sudo chown -R 65532:65532 ./data
+```
+
 For this example we will run haste-server, and connect it to a redis server
 
 ```bash
@@ -328,6 +367,7 @@ Here is a list of all the environment variables
 |   STORAGE_AWS_BUCKET   |               |                          Applicable for amazon-s3. This is the name of the S3 bucket                          |
 |   STORAGE_AWS_REGION   |               |                      Applicable for amazon-s3. The region in which the bucket is located                      |
 |    STORAGE_FILEPATH    |               |                            Path to file to save data to. Applicable for type file                             |
+|      STORAGE_TLS       |     false     |                  Use https instead of http for the storage endpoint. Applicable for s3                  |
 
 ### Logging
 
@@ -350,6 +390,10 @@ Here is a list of all the environment variables
 |    KEYGENERATOR_TYPE     |     phonetic     |             Type of key generator. Acceptable values: "phonetic", or "random"             |
 |  KEYGENERATOR_KEYSPACE   |                  |                  keySpace argument is a string of acceptable characters                   |
 |        DOCUMENTS         | about=./about.md | Comma separated list of static documents to serve. ex: \n about=./about.md,home=./home.md |
+|     TRUSTED_PROXIES      |                  |           Comma separated proxy CIDRs or IPs allowed to set the client IP, ex: 172.18.0.1 |
+|      REAL_IP_HEADER      | X-Forwarded-For  |      The only header read for the client IP, ex: CF-Connecting-IP or X-Real-IP           |
+|       METRICS_ADDR       |                  |                Address of the separate metrics listener. Empty turns metrics off               |
+|         BASE_URL         |                  |                     Public URL used in /log links, ex: https://paste.example.com                    |
 
 ### Rate limits
 

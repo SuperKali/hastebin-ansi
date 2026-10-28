@@ -23,7 +23,7 @@ type S3Storage struct {
 	bucket     string
 }
 
-func NewS3Storage(host string, port int, username string, password string, region string, bucket string) *S3Storage {
+func NewS3Storage(host string, port int, username string, password string, region string, bucket string, useTLS bool) *S3Storage {
 	creds := credentials.NewStaticCredentialsProvider(username, password, "")
 	awscfg, err := config.LoadDefaultConfig(context.Background(),
 		config.WithRegion(region),
@@ -37,8 +37,13 @@ func NewS3Storage(host string, port int, username string, password string, regio
 		log.Fatal().Err(err).Msg("Failed to load SDK config")
 	}
 
+	scheme := "http://"
+	if useTLS {
+		scheme = "https://"
+	}
+
 	svc := s3.NewFromConfig(awscfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String("http://" + host + ":" + strconv.Itoa(port))
+		o.BaseEndpoint = aws.String(scheme + host + ":" + strconv.Itoa(port))
 		o.UsePathStyle = true
 	})
 
@@ -61,8 +66,6 @@ func NewS3Storage(host string, port int, username string, password string, regio
 
 	return &S3Storage{svc: svc, downloader: downloader, uploader: uploader, bucket: bucket}
 }
-
-var ErrNotFound = errors.New("not found")
 
 var _ Storage = (*S3Storage)(nil)
 

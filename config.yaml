@@ -3,13 +3,37 @@ port: 7777
 key_length: 10
 max_length: 4000000
 static_max_age: 3
+# Paste lifetime in seconds, 0 means pastes never expire
 expiration: 0
 recompress_static_assets: false
 key_generator: "phonetic"
 
+# Proxies allowed to set the client IP. Empty means client IP headers are ignored.
+# List only your reverse proxy's address. A Docker or Pterodactyl gateway such as
+# 172.18.0.1 is safe to trust only if the container port is not reachable from the
+# internet (firewall it or bind it to 127.0.0.1): direct clients also arrive from it.
+# trusted_proxies:
+#   - "172.18.0.1"
+trusted_proxies: []
+
+# The only header read for the client IP from trusted proxies.
+# Empty means X-Forwarded-For, read right to left.
+# real_ip_header: "CF-Connecting-IP"
+real_ip_header: ""
+
+# Separate listener for Prometheus metrics, empty means off
+# metrics_addr: "127.0.0.1:9100"
+metrics_addr: ""
+
+# Public URL used in /log links, empty means https://<Host header>
+# base_url: "https://paste.example.com"
+base_url: ""
+
 storage:
   type: "file"
   file_path: "./test"
+  # Use https for the s3 endpoint
+  tls: false
 
 documents:
   - key: "about"

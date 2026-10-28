@@ -75,7 +75,7 @@ haste_document.prototype.save = function (data, callback) {
             });
         }, error: function (res) {
             try {
-                callback($.parseJSON(res.responseText));
+                callback(JSON.parse(res.responseText));
             } catch (e) {
                 callback({message: 'Something went wrong!'});
             }

@@ -7,6 +7,8 @@ services:
       - STORAGE_FILE_PATH=/app/pastes
     ports:
       - "7777:7777"
+    # The image runs as uid 65532. Make ./data writable first:
+    #   sudo chown -R 65532:65532 ./data
     volumes:
       - ./config.yaml:/app/config.yaml
       - ./about.md:/app/about.md
