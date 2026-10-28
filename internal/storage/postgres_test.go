@@ -50,7 +50,14 @@ func TestPostgresStorage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "value1", val)
 
+	size, err := store.Size("key1")
+	require.NoError(t, err)
+	require.EqualValues(t, len("value1"), size)
+
 	time.Sleep(3 * time.Second)
+
+	_, err = store.Size("key1")
+	require.ErrorIs(t, err, ErrNotFound)
 
 	val, err = store.Get("key1", false)
 	require.ErrorIs(t, err, ErrNotFound)
@@ -94,6 +101,8 @@ func TestPostgresStorage_NotFound(t *testing.T) {
 	store := NewPostgresStorage(host, port, "test", "test", "testdb", 0)
 
 	_, err := store.Get("missing", false)
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = store.Size("missing")
 	require.ErrorIs(t, err, ErrNotFound)
 
 	require.NoError(t, store.Close())

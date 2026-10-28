@@ -11,5 +11,4 @@ services:
     #   sudo chown -R 65532:65532 ./data
     volumes:
       - ./config.yaml:/app/config.yaml
-      - ./about.md:/app/about.md
       - "./data:/app/pastes"

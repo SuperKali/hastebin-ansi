@@ -68,6 +68,26 @@ func (s *RedisStorage) Get(key string, skip_expiration bool) (string, error) {
 	return res, nil
 }
 
+func (s *RedisStorage) Size(key string) (int64, error) {
+	ctx := context.Background() // TODO: Add timeout control
+
+	n, err := s.client.StrLen(ctx, key).Result()
+	if err != nil {
+		return 0, err
+	}
+	if n == 0 {
+		// STRLEN answers 0 for a missing key too
+		exists, err := s.client.Exists(ctx, key).Result()
+		if err != nil {
+			return 0, err
+		}
+		if exists == 0 {
+			return 0, ErrNotFound
+		}
+	}
+	return n, nil
+}
+
 func (s *RedisStorage) Close() error {
 	return s.client.Close()
 }

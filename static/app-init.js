@@ -22,5 +22,6 @@ setTimeout(function () {
 // Construct app and load initial path
 $(function () {
     app = new haste('hastebin', { twitter: false });
+    app.loadInfo();
     handlePop({ target: window });
 });

@@ -14,7 +14,7 @@
         integrity="sha512-rO+olRTkcf304DQBxSWxln8JXCzTHlKnIdnMUwYvQa9/Jd4cQaNkItIUj6Z4nvW1dqK0SKXLbn9h4KwZTNtAyw=="
         crossorigin="anonymous" referrerpolicy="no-referrer" />
     <link rel="stylesheet" type="text/css" href="solarized_dark.css" />
-    <link rel="stylesheet" type="text/css" href="application.css?v=0.0.9" />
+    <link rel="stylesheet" type="text/css" href="application.css?v=0.1.0" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"
         integrity="sha512-v2CJ7UaYy4JwqLDIrZUI/4hqeoQieOmAZNXBeQyjo21dadnwR+8ZaIJVT8EE2iyI61OV8e6M8PP2/4hpQINQ/g=="
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
@@ -24,8 +24,8 @@
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
     <script type="text/javascript" src="ansi-to-html.js?v=0.0.8"></script>
-    <script type="text/javascript" src="application.js?v=0.0.9"></script>
-    <script type="text/javascript" src="app-init.js?v=0.0.9"></script>
+    <script type="text/javascript" src="application.js?v=0.1.0"></script>
+    <script type="text/javascript" src="app-init.js?v=0.1.0"></script>
 
     <meta name="robots" content="noindex,nofollow" />
 
@@ -47,6 +47,13 @@
             <button class="duplicate function button-picture">Duplicate & Edit</button>
             <button class="raw function button-picture">Just Text</button>
             <button class="twitter function button-picture">Twitter</button>
+            <button class="mcp function button-picture" type="button" hidden aria-label="AI / MCP"
+                aria-haspopup="dialog" aria-controls="mcp-overlay" aria-expanded="false">
+                <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M10 2.5l1.7 4.8a3 3 0 0 0 1.9 1.9l4.8 1.7-4.8 1.7a3 3 0 0 0-1.9 1.9L10 19.3l-1.7-4.8a3 3 0 0 0-1.9-1.9L1.6 10.9l4.8-1.7a3 3 0 0 0 1.9-1.9z"/>
+                    <path fill="currentColor" d="M18.5 13.5l.8 2.2a1.5 1.5 0 0 0 .9.9l2.2.8-2.2.8a1.5 1.5 0 0 0-.9.9l-.8 2.2-.8-2.2a1.5 1.5 0 0 0-.9-.9l-2.2-.8 2.2-.8a1.5 1.5 0 0 0 .9-.9z"/>
+                </svg>
+            </button>
         </div>
         <div id="box3" style="display:none;">
             <div class="label"></div>
@@ -58,6 +65,89 @@
     <pre id="box" style="display:none;" class="hljs" tabindex="0"><code></code></pre>
     <!--suppress HtmlFormInputWithoutLabel -->
     <textarea spellcheck="false" style="display:none;"></textarea>
+
+    <div id="large-notice" role="status" hidden>
+        <span class="large-text"></span>
+        <a class="large-raw" href="#">Open the full file as plain text</a>
+    </div>
+
+    <div id="mcp-overlay" hidden>
+        <div id="mcp-panel" role="dialog" aria-modal="true" aria-labelledby="mcp-title" aria-describedby="mcp-intro" tabindex="-1">
+            <div class="mcp-head">
+                <h2 id="mcp-title">Use hastebin from your AI assistant</h2>
+                <button type="button" class="mcp-close" aria-label="Close">
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                        <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                </button>
+            </div>
+            <div id="mcp-intro">
+                <p>This paste server works with AI assistants through MCP, so they can upload logs and read pastes for you.</p>
+                <p>Add the address below once. It is free and needs no account.</p>
+            </div>
+
+            <div class="mcp-endpoint">
+                <span class="mcp-label" id="mcp-endpoint-label">MCP endpoint</span>
+                <div class="mcp-copyrow">
+                    <code class="mcp-snippet" data-template="{origin}/mcp" aria-labelledby="mcp-endpoint-label"></code>
+                    <button type="button" class="mcp-copy">Copy</button>
+                </div>
+            </div>
+
+            <div class="mcp-tabs" role="tablist" aria-label="Setup by client">
+                <button type="button" role="tab" id="mcp-tab-code" aria-controls="mcp-pane-code" aria-selected="true">Claude Code</button>
+                <button type="button" role="tab" id="mcp-tab-app" aria-controls="mcp-pane-app" aria-selected="false" tabindex="-1">Claude app</button>
+                <button type="button" role="tab" id="mcp-tab-cursor" aria-controls="mcp-pane-cursor" aria-selected="false" tabindex="-1">Cursor &amp; others</button>
+                <button type="button" role="tab" id="mcp-tab-vscode" aria-controls="mcp-pane-vscode" aria-selected="false" tabindex="-1">VS Code</button>
+                <button type="button" role="tab" id="mcp-tab-shell" aria-controls="mcp-pane-shell" aria-selected="false" tabindex="-1">Shell</button>
+            </div>
+
+            <div class="mcp-pane" role="tabpanel" id="mcp-pane-code" aria-labelledby="mcp-tab-code">
+                <p>Run this in a terminal:</p>
+                <div class="mcp-copyrow">
+                    <code class="mcp-snippet" data-template="claude mcp add --transport http hastebin {origin}/mcp"></code>
+                    <button type="button" class="mcp-copy">Copy</button>
+                </div>
+            </div>
+            <div class="mcp-pane" role="tabpanel" id="mcp-pane-app" aria-labelledby="mcp-tab-app" hidden>
+                <p>In Claude Desktop or claude.ai open <b>Settings &gt; Connectors &gt; Add custom connector</b>, name it hastebin and paste this URL:</p>
+                <div class="mcp-copyrow">
+                    <code class="mcp-snippet" data-template="{origin}/mcp"></code>
+                    <button type="button" class="mcp-copy">Copy</button>
+                </div>
+            </div>
+            <div class="mcp-pane" role="tabpanel" id="mcp-pane-cursor" aria-labelledby="mcp-tab-cursor" hidden>
+                <p>Add this to <b>~/.cursor/mcp.json</b>. Many other clients use the same shape in their MCP config:</p>
+                <div class="mcp-copyrow mcp-block">
+                    <pre class="mcp-snippet" data-template='{"mcpServers": {"hastebin": {"url": "{origin}/mcp"}}}' data-json="true"></pre>
+                    <button type="button" class="mcp-copy">Copy</button>
+                </div>
+            </div>
+            <div class="mcp-pane" role="tabpanel" id="mcp-pane-vscode" aria-labelledby="mcp-tab-vscode" hidden>
+                <p>Add this to <b>.vscode/mcp.json</b> in your project, or to your user MCP config:</p>
+                <div class="mcp-copyrow mcp-block">
+                    <pre class="mcp-snippet" data-template='{"servers": {"hastebin": {"type": "http", "url": "{origin}/mcp"}}}' data-json="true"></pre>
+                    <button type="button" class="mcp-copy">Copy</button>
+                </div>
+            </div>
+            <div class="mcp-pane" role="tabpanel" id="mcp-pane-shell" aria-labelledby="mcp-tab-shell" hidden>
+                <p>No AI client? Upload a file from any terminal. It prints the link:</p>
+                <div class="mcp-copyrow">
+                    <code class="mcp-snippet" data-template="curl --data-binary @file.log {origin}/log"></code>
+                    <button type="button" class="mcp-copy">Copy</button>
+                </div>
+            </div>
+
+            <p class="mcp-warning">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M8 1l7.5 13H.5zm-.9 5v4h1.8V6zm0 5.2V13h1.8v-1.8z"/>
+                </svg>
+                <span>Pastes are public to anyone with the link. Remove tokens, passwords and keys first.</span>
+            </p>
+            <p class="mcp-more">Notes for agents: <a class="mcp-llms" href="/llms.txt">/llms.txt</a></p>
+            <span class="mcp-live" aria-live="polite"></span>
+        </div>
+    </div>
 
 </body>
 

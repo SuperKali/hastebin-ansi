@@ -17,6 +17,7 @@ const setSQLQuery = "INSERT INTO entries (key, value, expiration) VALUES ($1, $2
 const getSQLQuery = "SELECT id, value, expiration FROM entries WHERE key = $1"
 const deleteSQLQuery = "DELETE FROM entries WHERE id = $1"
 const updateSQLQuery = "UPDATE entries SET expiration = $1 WHERE id = $2"
+const sizeSQLQuery = "SELECT COALESCE(octet_length(value), 0), expiration FROM entries WHERE key = $1"
 
 type PostgresStorage struct {
 	pool *pgxpool.Pool
@@ -112,6 +113,25 @@ func (s *PostgresStorage) Get(key string, skip_expiration bool) (string, error) 
 	}
 
 	return value, nil
+}
+
+func (s *PostgresStorage) Size(key string) (int64, error) {
+	ctx := context.Background() // TODO: Add timeout control
+
+	var size, expiration int64
+	err := s.pool.QueryRow(ctx, sizeSQLQuery, key).Scan(&size, &expiration)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, notFound(err)
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	// Expired entries are deleted by the next Get
+	if expiration != 0 && time.Now().Unix() > expiration {
+		return 0, ErrNotFound
+	}
+	return size, nil
 }
 
 func (s *PostgresStorage) Close() error {

@@ -3,6 +3,8 @@ package storage
 import (
 	"errors"
 	"fmt"
+	"io"
+	"time"
 )
 
 // ErrNotFound is returned (possibly wrapped) by Get when the key does not exist or has expired
@@ -16,5 +18,44 @@ func notFound(err error) error {
 type Storage interface {
 	Set(key string, value string, skip_expiration bool) error
 	Get(key string, skip_expiration bool) (string, error)
+
+	// Size returns the size of a paste in bytes without loading it, so a read
+	// can be weighed before it is made. A missing or expired key is ErrNotFound.
+	// It does not refresh the expiration.
+	Size(key string) (int64, error)
+
 	Close() error
+}
+
+// Opener is implemented by backends that can stream a paste instead of loading it whole
+type Opener interface {
+	// Open returns the paste for reading and the time it was last written.
+	// A missing or expired key is ErrNotFound. It refreshes the expiration like Get(key, false).
+	// The caller must close the reader.
+	Open(key string) (io.ReadSeekCloser, time.Time, error)
+}
+
+// Writer is implemented by backends that can store a paste as it arrives,
+// without holding it in memory
+type Writer interface {
+	// Create starts a new paste under key. Nothing is stored under key until
+	// the PasteWriter is closed without error.
+	Create(key string) (PasteWriter, error)
+}
+
+// PasteWriter receives a paste. Close stores it under its key in one step.
+// Abort, or a failed Write or Close, leaves nothing behind. Abort after Close does nothing.
+type PasteWriter interface {
+	io.WriteCloser
+	Abort()
+}
+
+// ErrNoSpace is returned (possibly wrapped) when the disk has too little free space left for a paste
+var ErrNoSpace = errors.New("not enough free disk space")
+
+// SpaceChecker is implemented by backends that keep pastes on a local disk
+type SpaceChecker interface {
+	// CheckSpace returns ErrNoSpace when storing size more bytes would leave
+	// less free space than the configured floor
+	CheckSpace(size int64) error
 }

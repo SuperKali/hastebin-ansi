@@ -1,17 +1,40 @@
 host: "0.0.0.0"
 port: 7777
-key_length: 10
+key_length: 16
+# Largest paste in bytes. With file storage, uploads and reads are streamed
+# through small buffers, so a large max_length costs disk, not memory. Other
+# storage backends hold whole pastes in memory, so for them it is capped at
+# 8 MiB (less with a small memory_budget).
 max_length: 4000000
-static_max_age: 3
-# Paste lifetime in seconds, 0 means pastes never expire
+# Memory in bytes that paste reads and uploads may hold at the same time:
+# half for reads, half for uploads, and one client may hold at most a quarter
+# of each half, which is also the most one request may hold. A request that
+# does not fit gets 503 with Retry-After. The server needs about this much RAM
+# plus 64 MiB, and more for the socket buffers of slow clients. In a container
+# it is at most 40 percent of the memory limit.
+# memory_budget: 268435456
+# With file storage, bytes that must stay free on the disk of the data folder.
+# An upload that would leave less gets 507. -1 turns the check off.
+# min_free_disk: 1073741824
+# Bytes one client (an IPv4 address or an IPv6 /64) may upload per hour.
+# Over it uploads get 429. -1 turns the quota off.
+# upload_quota: 268435456
+# Paste lifetime in seconds, 0 means pastes never expire. Each read starts it
+# again. s3 storage ignores it. With file storage, a value above 0 deletes every
+# paste file not read or written for that long, existing pastes included.
+# A public server should set it (for example 2592000, 30 days) so the disk does
+# not fill up.
 expiration: 0
-recompress_static_assets: false
 key_generator: "phonetic"
+# Characters used by the "random" key generator
+# key_space: "abcdefghijklmnopqrstuvwxyz"
 
 # Proxies allowed to set the client IP. Empty means client IP headers are ignored.
 # List only your reverse proxy's address. A Docker or Pterodactyl gateway such as
-# 172.18.0.1 is safe to trust only if the container port is not reachable from the
-# internet (firewall it or bind it to 127.0.0.1): direct clients also arrive from it.
+# 172.18.0.1 is safe to trust only if the container port is bound to 127.0.0.1:
+# direct clients, and other containers going through the host, also arrive from it.
+# A cloudflared container should get a fixed IP, and only that IP is listed.
+# A client IP header from any other peer is ignored and logged once a minute.
 # trusted_proxies:
 #   - "172.18.0.1"
 trusted_proxies: []
@@ -25,26 +48,65 @@ real_ip_header: ""
 # metrics_addr: "127.0.0.1:9100"
 metrics_addr: ""
 
-# Public URL used in /log links, empty means https://<Host header>
+# Public URL used in /log links and MCP results, empty means https://<Host header>,
+# which the client controls. The server warns at startup while it is empty.
 # base_url: "https://paste.example.com"
 base_url: ""
 
+# MCP endpoint at /mcp, so AI assistants can upload and read pastes
+# mcp_enable: true
+
+# Largest content the MCP upload_log tool accepts, in bytes, capped at
+# max_length and so that 6 times it, plus room for JSON escaping, fits in one
+# client's share of the upload half of memory_budget (decoding the JSON takes
+# about 6 times the request size).
+# Larger files go to /log with curl.
+# mcp_max_length: 4194304
+
+# Large uploads (over 1 MiB or of unknown size) received at the same time, in
+# total and per client (an IPv6 /64 counts as one). When full the server answers
+# 503. -1 means no limit.
+# max_concurrent_uploads: 8
+# max_uploads_per_ip: 1
+
+# Requests one client (an IPv6 /64 counts as one) may have in progress at the
+# same time, on all routes together. More get 429. -1 means no limit.
+# max_inflight_per_client: 16
+# The same for requests to /mcp, which hold their whole body in memory.
+# mcp_max_inflight_per_client: 4
+
+# Seconds an upload may take, instead of the 60 second server timeouts.
+# Uploads slower than 64 KiB per 10 seconds are dropped with 408, and so is an
+# upload that has run for a minute and averaged less than 64 KiB per second.
+# -1 keeps 60 seconds.
+# upload_timeout: 300
+
+# A client (an IPv6 /64 counts as one) that looks up more than not_found_limit
+# unknown keys within not_found_window seconds gets 429 on lookups for
+# not_found_ban seconds. Uploads still work. -1 turns the ban off.
+# not_found_limit: 30
+# not_found_window: 900
+# not_found_ban: 3600
+
 storage:
   type: "file"
-  file_path: "./test"
+  file_path: "data"
   # Use https for the s3 endpoint
   tls: false
 
-documents:
-  - key: "about"
-    path: "/app/about.md"
+# Static documents, served by key (/about). Without any, the about page built
+# into the binary is served as "about".
+# documents:
+#   - key: "about"
+#     path: "/app/about.md"
 
+# On unless set to false
 rate_limiting:
   enable: true
+  # Requests per client IP in each window of seconds; 0 means the defaults 500 and 15
   limit: 500
   window: 15
 
 logging:
   level: "info"
-  type: "text"
   colorize: true

@@ -57,6 +57,12 @@ func TestS3Storage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "testValue", val)
 
+	size, err := store.Size("testKey")
+	require.NoError(t, err)
+	require.EqualValues(t, len("testValue"), size)
+	_, err = store.Size("nonExistingKey")
+	require.ErrorIs(t, err, ErrNotFound)
+
 	// Test Get not existing key
 	val, err = store.Get("nonExistingKey", false)
 	require.ErrorIs(t, ErrNotFound, err)

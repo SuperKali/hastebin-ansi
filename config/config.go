@@ -19,7 +19,8 @@ type LoggingConfig struct {
 }
 
 type RateLimitingConfig struct {
-	// Enable is a flag to enable rate limiting
+	// Enable is a flag to enable rate limiting. It defaults to true: NewConfig
+	// sets it before the file is read, so only an explicit false turns it off.
 	Enable bool `yaml:"enable"`
 
 	// Limit is the maximum number of requests
@@ -87,19 +88,32 @@ type Config struct {
 	// This property is only used for the "random" key generator
 	KeySpace string `yaml:"key_space"`
 
-	// MaxLength is the maximum length of the paste
+	// MaxLength is the maximum length of the paste. Backends other than "file"
+	// hold whole pastes in memory, so for them it is capped at 8 MiB, or less
+	// with a small MemoryBudget.
 	MaxLength int `yaml:"max_length"`
 
-	// StaticMaxAge is the maximum age of static assets
-	StaticMaxAge int `yaml:"static_max_age"`
+	// MemoryBudget is how many bytes reads and large uploads may hold in memory
+	// at the same time, by estimate: half for reads, half for uploads, and one
+	// client may hold at most a quarter of each half, which is also the most
+	// one request may hold. A request that does not fit gets 503. In a
+	// container it is capped at half the memory limit.
+	MemoryBudget int `yaml:"memory_budget"`
+
+	// MinFreeDisk is how many bytes must stay free on the filesystem of the
+	// "file" storage data dir. An upload that would leave less gets 507.
+	// A negative value turns the check off.
+	MinFreeDisk int64 `yaml:"min_free_disk"`
+
+	// UploadQuota is how many bytes one client (IPv4 address or IPv6 /64) may
+	// store per hour. A negative value means no quota.
+	UploadQuota int `yaml:"upload_quota"`
 
 	// Expiration is the maximum lifetime of paste entry, in seconds
 	// 0 means there will be no expiration.
-	// "file" and "s3" storages don't support expiration control.
+	// The "s3" storage doesn't support expiration control. With "file" storage a
+	// janitor deletes paste files older than this.
 	Expiration int `yaml:"expiration"`
-
-	// RecompressStaticAssets is a flag to recompress static assets by default
-	RecompressStaticAssets bool `yaml:"recompress_static_assets"`
 
 	// KeyGenerator is the key generator to use
 	// Available key generators are: "random", "phonetic"
@@ -121,6 +135,46 @@ type Config struct {
 	// Empty means the request Host header is used.
 	BaseURL string `yaml:"base_url"`
 
+	// MCPEnable serves the MCP endpoint at /mcp for AI assistants
+	MCPEnable bool `yaml:"mcp_enable"`
+
+	// MCPMaxLength is the largest content upload_log accepts over MCP, in bytes.
+	// It is capped at MaxLength, and so that 6 times it, plus room for JSON
+	// escaping, fits in one client's share of the upload memory budget.
+	// Larger files go to /log with curl instead.
+	MCPMaxLength int `yaml:"mcp_max_length"`
+
+	// MaxConcurrentUploads is how many large uploads may be received at the same time.
+	// A negative value means no limit.
+	MaxConcurrentUploads int `yaml:"max_concurrent_uploads"`
+
+	// MaxUploadsPerIP is how many large uploads one client IP may send at the same time.
+	// A negative value means no limit.
+	MaxUploadsPerIP int `yaml:"max_uploads_per_ip"`
+
+	// MaxInflightPerClient is how many requests one client (an IPv4 address or
+	// an IPv6 /64) may have in progress at the same time, on all routes
+	// together. More get 429. A negative value means no limit.
+	MaxInflightPerClient int `yaml:"max_inflight_per_client"`
+
+	// MCPMaxInflightPerClient is how many /mcp requests one client may have in
+	// progress at the same time. More get 429. A negative value means no limit.
+	MCPMaxInflightPerClient int `yaml:"mcp_max_inflight_per_client"`
+
+	// UploadTimeout is how long an upload may take, in seconds. It replaces the
+	// 60 second read and write timeouts on the upload routes. A negative value keeps them.
+	UploadTimeout int `yaml:"upload_timeout"`
+
+	// NotFoundLimit is how many lookups of unknown keys one client IP may make
+	// within NotFoundWindow before it is banned from lookups. -1 turns the ban off.
+	NotFoundLimit int `yaml:"not_found_limit"`
+
+	// NotFoundWindow is the period over which unknown key lookups are counted, in seconds
+	NotFoundWindow int `yaml:"not_found_window"`
+
+	// NotFoundBan is how long a banned client IP gets 429 on lookups, in seconds
+	NotFoundBan int `yaml:"not_found_ban"`
+
 	// Storage is the storage backend to use
 	// Available storage backends are: "redis", "file", "memcached", "mongodb", "s3", "postgres"
 	Storage StorageConfig `yaml:"storage"`
@@ -136,13 +190,24 @@ type Config struct {
 }
 
 var DefaultConfig = &Config{
-	Host:                   "0.0.0.0",
-	Port:                   7777,
-	KeyLength:              10,
-	MaxLength:              4000000,
-	StaticMaxAge:           3,
-	RecompressStaticAssets: false,
-	KeyGenerator:           "phonetic",
+	Host:                    "0.0.0.0",
+	Port:                    7777,
+	KeyLength:               16,
+	MaxLength:               4000000,
+	MemoryBudget:            256 << 20,
+	MinFreeDisk:             1 << 30,
+	UploadQuota:             256 << 20,
+	KeyGenerator:            "phonetic",
+	MCPEnable:               true,
+	MCPMaxLength:            4 << 20,
+	MaxConcurrentUploads:    8,
+	MaxUploadsPerIP:         1,
+	MaxInflightPerClient:    16,
+	MCPMaxInflightPerClient: 4,
+	UploadTimeout:           300,
+	NotFoundLimit:           30,
+	NotFoundWindow:          900,
+	NotFoundBan:             3600,
 	Storage: StorageConfig{
 		Type:     "file",
 		FilePath: "data",
@@ -150,12 +215,12 @@ var DefaultConfig = &Config{
 	Logging: LoggingConfig{
 		Level: "info",
 	},
-	Documents: []DocumentConfig{
-		{
-			Key:  "about",
-			Path: "about.md",
-		},
+	RateLimiting: RateLimitingConfig{
+		Enable: true,
+		Limit:  500,
+		Window: 15,
 	},
+	// No documents: the server then serves its built-in about page as "about"
 }
 
 // ExpirationDuration returns the paste expiration, which is configured in seconds
@@ -165,7 +230,12 @@ func (c *Config) ExpirationDuration() time.Duration {
 
 // NewConfig creates a new Config instance
 func NewConfig(configFile string) *Config {
-	cfg := &Config{}
+	// Booleans that default to true are set before the file is read,
+	// so a missing key keeps the default and "false" turns them off
+	cfg := &Config{
+		MCPEnable:    DefaultConfig.MCPEnable,
+		RateLimiting: RateLimitingConfig{Enable: DefaultConfig.RateLimiting.Enable},
+	}
 
 	// Read the configuration file
 	data, err := os.ReadFile(configFile)
@@ -207,20 +277,40 @@ func NewConfig(configFile string) *Config {
 		cfg.MaxLength = maxLengthInt
 	}
 
-	if staticMaxAge := os.Getenv("STATIC_MAX_AGE"); staticMaxAge != "" {
-		staticMaxAgeInt, err := strconv.Atoi(staticMaxAge)
-		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to parse STATIC_MAX_AGE environment variable")
+	for _, setting := range []struct {
+		env    string
+		target *int
+	}{
+		{"MEMORY_BUDGET", &cfg.MemoryBudget},
+		{"UPLOAD_QUOTA", &cfg.UploadQuota},
+	} {
+		if value := os.Getenv(setting.env); value != "" {
+			valueInt, err := strconv.Atoi(value)
+			if err != nil {
+				log.Fatal().Err(err).Msgf("Failed to parse %s environment variable", setting.env)
+			}
+			*setting.target = valueInt
 		}
-		cfg.StaticMaxAge = staticMaxAgeInt
 	}
 
-	if recompressStaticAssets := os.Getenv("RECOMPRESS_STATIC_ASSETS"); recompressStaticAssets != "" {
-		recompressStaticAssetsBool, err := strconv.ParseBool(recompressStaticAssets)
+	if minFreeDisk := os.Getenv("MIN_FREE_DISK"); minFreeDisk != "" {
+		minFreeDiskInt, err := strconv.ParseInt(minFreeDisk, 10, 64)
 		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to parse RECOMPRESS_STATIC_ASSETS environment variable")
+			log.Fatal().Err(err).Msg("Failed to parse MIN_FREE_DISK environment variable")
 		}
-		cfg.RecompressStaticAssets = recompressStaticAssetsBool
+		cfg.MinFreeDisk = minFreeDiskInt
+	}
+
+	if keySpace := os.Getenv("KEY_SPACE"); keySpace != "" {
+		cfg.KeySpace = keySpace
+	}
+
+	if expiration := os.Getenv("EXPIRATION"); expiration != "" {
+		expirationInt, err := strconv.Atoi(expiration)
+		if err != nil || expirationInt < 0 {
+			log.Fatal().Str("value", expiration).Msg("Failed to parse EXPIRATION environment variable: expected seconds, 0 or more")
+		}
+		cfg.Expiration = expirationInt
 	}
 
 	if keyGenerator := os.Getenv("KEY_GENERATOR"); keyGenerator != "" {
@@ -296,6 +386,65 @@ func NewConfig(configFile string) *Config {
 		cfg.BaseURL = baseURL
 	}
 
+	if mcpEnable := os.Getenv("MCP_ENABLE"); mcpEnable != "" {
+		mcpEnableBool, err := strconv.ParseBool(mcpEnable)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to parse MCP_ENABLE environment variable")
+		}
+		cfg.MCPEnable = mcpEnableBool
+	}
+
+	if mcpMaxLength := os.Getenv("MCP_MAX_LENGTH"); mcpMaxLength != "" {
+		mcpMaxLengthInt, err := strconv.Atoi(mcpMaxLength)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to parse MCP_MAX_LENGTH environment variable")
+		}
+		cfg.MCPMaxLength = mcpMaxLengthInt
+	}
+
+	if maxConcurrentUploads := os.Getenv("MAX_CONCURRENT_UPLOADS"); maxConcurrentUploads != "" {
+		maxConcurrentUploadsInt, err := strconv.Atoi(maxConcurrentUploads)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to parse MAX_CONCURRENT_UPLOADS environment variable")
+		}
+		cfg.MaxConcurrentUploads = maxConcurrentUploadsInt
+	}
+
+	if maxUploadsPerIP := os.Getenv("MAX_UPLOADS_PER_IP"); maxUploadsPerIP != "" {
+		maxUploadsPerIPInt, err := strconv.Atoi(maxUploadsPerIP)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to parse MAX_UPLOADS_PER_IP environment variable")
+		}
+		cfg.MaxUploadsPerIP = maxUploadsPerIPInt
+	}
+
+	if uploadTimeout := os.Getenv("UPLOAD_TIMEOUT"); uploadTimeout != "" {
+		uploadTimeoutInt, err := strconv.Atoi(uploadTimeout)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to parse UPLOAD_TIMEOUT environment variable")
+		}
+		cfg.UploadTimeout = uploadTimeoutInt
+	}
+
+	for _, setting := range []struct {
+		env    string
+		target *int
+	}{
+		{"MAX_INFLIGHT_PER_CLIENT", &cfg.MaxInflightPerClient},
+		{"MCP_MAX_INFLIGHT_PER_CLIENT", &cfg.MCPMaxInflightPerClient},
+		{"NOT_FOUND_LIMIT", &cfg.NotFoundLimit},
+		{"NOT_FOUND_WINDOW", &cfg.NotFoundWindow},
+		{"NOT_FOUND_BAN", &cfg.NotFoundBan},
+	} {
+		if value := os.Getenv(setting.env); value != "" {
+			valueInt, err := strconv.Atoi(value)
+			if err != nil {
+				log.Fatal().Err(err).Msgf("Failed to parse %s environment variable", setting.env)
+			}
+			*setting.target = valueInt
+		}
+	}
+
 	if loggingLevel := os.Getenv("LOGGING_LEVEL"); loggingLevel != "" {
 		cfg.Logging.Level = loggingLevel
 	}
@@ -364,13 +513,85 @@ func NewConfig(configFile string) *Config {
 	if cfg.MaxLength == 0 {
 		cfg.MaxLength = DefaultConfig.MaxLength
 	}
+	if cfg.MaxLength < 0 {
+		log.Fatal().Int("max_length", cfg.MaxLength).Msg("max_length must be 1 or more bytes (0 means the default)")
+	}
 
-	if cfg.StaticMaxAge == 0 {
-		cfg.StaticMaxAge = DefaultConfig.StaticMaxAge
+	if cfg.KeyLength < 1 {
+		log.Fatal().Int("key_length", cfg.KeyLength).Msg("key_length must be 1 or more characters (0 means the default)")
+	}
+
+	if cfg.MemoryBudget < 0 {
+		log.Fatal().Int("memory_budget", cfg.MemoryBudget).Msg("memory_budget must be 1 or more bytes (0 means the default)")
+	}
+	if cfg.MemoryBudget == 0 {
+		cfg.MemoryBudget = DefaultConfig.MemoryBudget
+	}
+
+	if cfg.MinFreeDisk == 0 {
+		cfg.MinFreeDisk = DefaultConfig.MinFreeDisk
+	}
+	if cfg.MinFreeDisk < 0 {
+		cfg.MinFreeDisk = 0
+	}
+
+	if cfg.UploadQuota == 0 {
+		cfg.UploadQuota = DefaultConfig.UploadQuota
+	}
+	if cfg.UploadQuota > 0 && cfg.UploadQuota < cfg.MaxLength {
+		log.Warn().Int("upload_quota", cfg.UploadQuota).Int("max_length", cfg.MaxLength).
+			Msg("upload_quota is less than max_length: no client can upload a paste of the largest size")
 	}
 
 	if cfg.KeyGenerator == "" {
 		cfg.KeyGenerator = DefaultConfig.KeyGenerator
+	}
+
+	if cfg.MCPMaxLength < 0 {
+		log.Fatal().Int("mcp_max_length", cfg.MCPMaxLength).Msg("mcp_max_length must be 0 (default) or more bytes")
+	}
+	mcpMaxLengthSet := cfg.MCPMaxLength != 0
+	if !mcpMaxLengthSet {
+		cfg.MCPMaxLength = DefaultConfig.MCPMaxLength
+	}
+	if cfg.MaxLength > 0 && cfg.MCPMaxLength > cfg.MaxLength {
+		if mcpMaxLengthSet {
+			log.Warn().Int("mcp_max_length", cfg.MCPMaxLength).Int("max_length", cfg.MaxLength).
+				Msg("mcp_max_length is larger than max_length, using max_length")
+		}
+		cfg.MCPMaxLength = cfg.MaxLength
+	}
+
+	if cfg.MaxConcurrentUploads == 0 {
+		cfg.MaxConcurrentUploads = DefaultConfig.MaxConcurrentUploads
+	}
+
+	if cfg.MaxUploadsPerIP == 0 {
+		cfg.MaxUploadsPerIP = DefaultConfig.MaxUploadsPerIP
+	}
+
+	if cfg.MaxInflightPerClient == 0 {
+		cfg.MaxInflightPerClient = DefaultConfig.MaxInflightPerClient
+	}
+
+	if cfg.MCPMaxInflightPerClient == 0 {
+		cfg.MCPMaxInflightPerClient = DefaultConfig.MCPMaxInflightPerClient
+	}
+
+	if cfg.UploadTimeout == 0 {
+		cfg.UploadTimeout = DefaultConfig.UploadTimeout
+	}
+
+	if cfg.NotFoundLimit == 0 {
+		cfg.NotFoundLimit = DefaultConfig.NotFoundLimit
+	}
+
+	if cfg.NotFoundWindow <= 0 {
+		cfg.NotFoundWindow = DefaultConfig.NotFoundWindow
+	}
+
+	if cfg.NotFoundBan <= 0 {
+		cfg.NotFoundBan = DefaultConfig.NotFoundBan
 	}
 
 	if cfg.Storage.Type == "" {
@@ -383,6 +604,18 @@ func NewConfig(configFile string) *Config {
 
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = DefaultConfig.Logging.Level
+	}
+
+	if cfg.RateLimiting.Limit == 0 {
+		cfg.RateLimiting.Limit = DefaultConfig.RateLimiting.Limit
+	}
+
+	if cfg.RateLimiting.Window == 0 {
+		cfg.RateLimiting.Window = DefaultConfig.RateLimiting.Window
+	}
+
+	if cfg.Expiration < 0 {
+		log.Fatal().Int("expiration", cfg.Expiration).Msg("expiration must be 0 (never) or more seconds")
 	}
 
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")

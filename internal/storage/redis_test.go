@@ -66,6 +66,12 @@ func TestRedisStorage_SetAndGet(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, value, got)
 
+	size, err := storage.Size(key)
+	require.NoError(t, err)
+	require.EqualValues(t, len(value), size)
+	_, err = storage.Size("missingKey")
+	require.ErrorIs(t, err, ErrNotFound)
+
 	ttlAfterGet, err := storage.client.TTL(context.Background(), key).Result() // TTL should be reset after GET operation
 	require.NoError(t, err)
 	require.True(t, ttlAfterGet > time.Second)

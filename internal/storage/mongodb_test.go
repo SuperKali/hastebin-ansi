@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
@@ -63,6 +64,19 @@ func TestMongoDBStorage(t *testing.T) {
 	val, err := store.Get("testKey", false)
 	require.NoError(t, err)
 	require.Equal(t, "testValue", val)
+
+	size, err := store.Size("testKey")
+	require.NoError(t, err)
+	require.EqualValues(t, len("testValue"), size)
+	_, err = store.Size("missingKey")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	// Entries written before the size field existed are measured by the server
+	_, err = store.collection.InsertOne(context.Background(), bson.M{"key": "oldKey", "value": []byte("old value")})
+	require.NoError(t, err)
+	size, err = store.Size("oldKey")
+	require.NoError(t, err)
+	require.EqualValues(t, len("old value"), size)
 
 	// Test expiration mechanism
 	time.Sleep(time.Duration(expiration+1) * time.Second)

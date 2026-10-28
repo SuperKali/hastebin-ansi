@@ -256,6 +256,11 @@ function pushText(text, options) {
         .replace(/"/g, '&quot;');
 }
 
+// Most tags open at the same time. A paste of nothing but "bold on" codes
+// would otherwise nest hundreds of thousands of elements and freeze the tab.
+// Past the cap, opening codes are ignored until a tag closes.
+const maxStackDepth = 32;
+
 /**
  * @param {Array} stack
  * @param {string} tag
@@ -263,6 +268,10 @@ function pushText(text, options) {
  * @returns {string}
  */
 function pushTag(stack, tag, style) {
+    if (stack.length >= maxStackDepth) {
+        return '';
+    }
+
     if (!style) {
         style = '';
     }

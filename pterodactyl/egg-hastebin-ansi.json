@@ -7,10 +7,11 @@
     "exported_at": "2026-10-28T00:00:00+00:00",
     "name": "hastebin-ansi",
     "author": "freelance@harrydev.me",
-    "description": "Hastebin paste server with ANSI color support. The server image is built by GitHub Actions and pulled again when the server restarts, so updates arrive on restart. The install script only writes config.yaml and creates the data folder.",
+    "description": "Hastebin paste server with ANSI color support and an MCP endpoint for AI assistants. The server image is built by GitHub Actions. The default image is a fixed release; pick the newer release image in Startup to update, or \"latest (follows main)\" to get every change on restart. The install script only writes config.yaml and creates the data folder.",
     "features": null,
     "docker_images": {
-        "ghcr.io/superkali/ansi-hastebin:pterodactyl": "ghcr.io/superkali/ansi-hastebin:pterodactyl"
+        "release v1.1.0": "ghcr.io/superkali/ansi-hastebin:pterodactyl-v1.1.0",
+        "latest (follows main)": "ghcr.io/superkali/ansi-hastebin:pterodactyl"
     },
     "file_denylist": [],
     "startup": "hastebin --config config.yaml",
@@ -22,7 +23,7 @@
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/ash\n# hastebin-ansi install script.\n# Nothing is compiled here: the server binary ships in the Docker image,\n# which GitHub Actions builds. This only prepares the server folder.\nset -e\ncd /mnt/server\n\nDATA_DIR=\"${STORAGE_FILE_PATH:-data}\"\n\n# Remove leftovers of the old egg, which built from source.\n# Only these exact names are removed. The data dir is never touched.\nfor f in hastebin hastebin-ansi static cmd config handler internal .github .git \\\n    go.mod go.sum Dockerfile .dockerignore .gitignore docker-compose.yaml docker-compose.yml \\\n    README.md LICENSE about.md config.yaml.example config.example.yaml; do\n    if [ \"$f\" = \"$DATA_DIR\" ] || [ \"$f\" = \"data\" ]; then\n        continue\n    fi\n    if [ -e \"$f\" ] || [ -L \"$f\" ]; then\n        echo \"Removing old build file: $f\"\n        rm -rf \"./$f\"\n    fi\ndone\n\n# Keep the previous config as a backup\nif [ -f config.yaml ]; then\n    echo \"Saving the old config.yaml as config.yaml.bak\"\n    mv -f config.yaml config.yaml.bak\nfi\n\n# Fresh config. Egg variables (environment) override these values at startup.\ncat > config.yaml <<'EOF'\nhost: \"0.0.0.0\"\nport: 7777\nkey_length: 10\nmax_length: 4000000\n# Paste lifetime in seconds, 0 means pastes never expire\nexpiration: 0\nkey_generator: \"phonetic\"\n\nstorage:\n  type: \"file\"\n  file_path: \"data\"\n\ndocuments:\n  - key: \"about\"\n    path: \"/opt/hastebin/about.md\"\n\nrate_limiting:\n  enable: true\n  limit: 500\n  window: 15\n\nlogging:\n  level: \"info\"\n  colorize: false\nEOF\n\nmkdir -p data\necho \"Install done. The server binary comes from the Docker image.\"\n",
+            "script": "#!/bin/ash\n# hastebin-ansi install script.\n# Nothing is compiled here: the server binary ships in the Docker image,\n# which GitHub Actions builds. This only prepares the server folder.\nset -e\ncd /mnt/server\n\nDATA_DIR=\"${STORAGE_FILE_PATH:-data}\"\n\n# Remove leftovers of the old egg, which built from source.\n# Only these exact names are removed. The data dir is never touched.\nfor f in hastebin hastebin-ansi static cmd config handler internal .github .git \\\n    go.mod go.sum Dockerfile .dockerignore .gitignore docker-compose.yaml docker-compose.yml \\\n    README.md LICENSE about.md config.yaml.example config.example.yaml; do\n    if [ \"$f\" = \"$DATA_DIR\" ] || [ \"$f\" = \"data\" ]; then\n        continue\n    fi\n    if [ -e \"$f\" ] || [ -L \"$f\" ]; then\n        echo \"Removing old build file: $f\"\n        rm -rf \"./$f\"\n    fi\ndone\n\n# Keep the previous config as a backup, never overwriting an older backup\nif [ -f config.yaml ]; then\n    BACKUP=\"config.yaml.bak.$(date +%Y%m%d-%H%M%S)\"\n    echo \"Saving the old config.yaml as $BACKUP\"\n    mv config.yaml \"$BACKUP\"\nfi\n\n# Fresh config. Egg variables (environment) override these values at startup.\ncat > config.yaml <<'EOF'\nhost: \"0.0.0.0\"\nport: 7777\nkey_length: 16\nmax_length: 33554432\n# Memory that reads and large uploads may hold at the same time\nmemory_budget: 268435456\n# Bytes one client may upload per hour\nupload_quota: 268435456\n# Paste lifetime in seconds, 0 means pastes never expire.\n# With file storage, files older than this are deleted.\nexpiration: 0\nkey_generator: \"phonetic\"\nbase_url: \"https://paste.superkali.me\"\nmcp_enable: true\nmax_concurrent_uploads: 8\nmax_uploads_per_ip: 1\nupload_timeout: 300\n\nstorage:\n  type: \"file\"\n  file_path: \"data\"\n\ndocuments:\n  - key: \"about\"\n    path: \"/opt/hastebin/about.md\"\n\nrate_limiting:\n  enable: true\n  limit: 500\n  window: 15\n\nlogging:\n  level: \"info\"\n  colorize: false\nEOF\n\nmkdir -p data\necho \"Install done. The server binary comes from the Docker image.\"\n",
             "container": "alpine:3.22",
             "entrypoint": "ash"
         }
@@ -50,22 +51,112 @@
         },
         {
             "name": "Key Length",
-            "description": "Length of the paste keys in the URL.",
+            "description": "Length of the paste keys in the URL, at least 12, so keys cannot be guessed.",
             "env_variable": "KEY_LENGTH",
-            "default_value": "10",
+            "default_value": "16",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "required|integer|between:4,64",
+            "rules": "required|integer|between:12,64",
+            "field_type": "text"
+        },
+        {
+            "name": "Expiration",
+            "description": "Paste lifetime in seconds, 0 means pastes never expire. Each read starts it again. With file storage, a value above 0 deletes every paste file not read or written for that long, existing pastes included. S3 storage ignores it. On a public server set it, for example 2592000 (30 days), so the disk does not fill up.",
+            "env_variable": "EXPIRATION",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:0",
             "field_type": "text"
         },
         {
             "name": "Max Length",
-            "description": "Largest paste accepted, in bytes.",
+            "description": "Largest paste accepted, in bytes. 33554432 is 32 MiB. With file storage, uploads and reads are streamed to and from disk through small buffers. Other storage types hold whole pastes in memory and are capped at 8 MiB.",
             "env_variable": "MAX_LENGTH",
-            "default_value": "4000000",
+            "default_value": "33554432",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "required|integer|min:1",
+            "rules": "required|integer|between:1,1073741824",
+            "field_type": "text"
+        },
+        {
+            "name": "Max Concurrent Uploads",
+            "description": "Large uploads (over 1 MiB) received at the same time. More are refused with 503 until a slot frees up. -1 means no limit.",
+            "env_variable": "MAX_CONCURRENT_UPLOADS",
+            "default_value": "8",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:-1,256",
+            "field_type": "text"
+        },
+        {
+            "name": "Max Uploads Per IP",
+            "description": "Large uploads (over 1 MiB) one client may send at the same time. An IPv6 client counts as its whole /64. More are refused with 503. -1 means no limit.",
+            "env_variable": "MAX_UPLOADS_PER_IP",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:-1,256",
+            "field_type": "text"
+        },
+        {
+            "name": "Max Requests Per Client",
+            "description": "Requests one client may have in progress at the same time, on all routes together, web page files included. More get 429. An IPv6 client counts as its whole /64. -1 means no limit.",
+            "env_variable": "MAX_INFLIGHT_PER_CLIENT",
+            "default_value": "16",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:-1,1024",
+            "field_type": "text"
+        },
+        {
+            "name": "MCP Max Requests Per Client",
+            "description": "Requests to /mcp one client may have in progress at the same time. More get 429. -1 means no limit.",
+            "env_variable": "MCP_MAX_INFLIGHT_PER_CLIENT",
+            "default_value": "4",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:-1,256",
+            "field_type": "text"
+        },
+        {
+            "name": "Upload Timeout",
+            "description": "Seconds an upload may take to arrive and be answered. Uploads slower than 64 KiB per 10 seconds are dropped earlier, and so is an upload that has run for a minute and averaged less than 64 KiB per second. -1 keeps the 60 second server timeout.",
+            "env_variable": "UPLOAD_TIMEOUT",
+            "default_value": "300",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:-1,86400",
+            "field_type": "text"
+        },
+        {
+            "name": "Memory Budget",
+            "description": "Memory, in bytes, that paste reads and uploads may hold at the same time, half for each. 268435456 is 256 MiB. Requests that do not fit get 503 and are retried, and one client may hold at most an eighth of it. The server uses at most 40 percent of its memory limit for it and keeps the rest for itself and the kernel, so give it 640 MiB of RAM or more to keep 256 MiB. With less RAM it uses 40 percent of the limit instead.",
+            "env_variable": "MEMORY_BUDGET",
+            "default_value": "268435456",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:0,17179869184",
+            "field_type": "text"
+        },
+        {
+            "name": "Minimum Free Disk",
+            "description": "Bytes that must stay free on the disk of the data folder (file storage only). An upload that would leave less gets 507. 1073741824 is 1 GiB. -1 turns the check off.",
+            "env_variable": "MIN_FREE_DISK",
+            "default_value": "1073741824",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:-1",
+            "field_type": "text"
+        },
+        {
+            "name": "Upload Quota",
+            "description": "Bytes one client may upload per hour, so nobody can fill the disk. 268435456 is 256 MiB. An IPv6 client counts as its whole /64. Over it uploads get 429. -1 turns it off.",
+            "env_variable": "UPLOAD_QUOTA",
+            "default_value": "268435456",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:-1",
             "field_type": "text"
         },
         {
@@ -120,7 +211,7 @@
         },
         {
             "name": "Trusted Proxies",
-            "description": "Comma separated IPs or CIDRs of the reverse proxy allowed to pass the real client IP, for example the address cloudflared comes from (172.18.0.1). Only safe if the server port is not reachable directly from the internet. Leave empty to ignore client IP headers.",
+            "description": "Comma separated IPs or CIDRs of the reverse proxy allowed to pass the real client IP. With cloudflared on the host this is the Docker gateway (172.18.0.1): then bind the allocation to 127.0.0.1, so nothing else can come in through the gateway. With cloudflared in a container, give it a fixed IP and list that instead. Leave empty to ignore client IP headers.",
             "env_variable": "TRUSTED_PROXIES",
             "default_value": "172.18.0.1",
             "user_viewable": true,
@@ -140,12 +231,12 @@
         },
         {
             "name": "Base URL",
-            "description": "Public URL used in links returned by /log, for example https://paste.example.com. Leave empty to use the request host.",
+            "description": "Public URL of the server, used in the links that /log and MCP return, for example https://paste.example.com. Without it links would follow the Host header the client sends.",
             "env_variable": "BASE_URL",
-            "default_value": "",
+            "default_value": "https://paste.superkali.me",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "nullable|url",
+            "rules": "required|url",
             "field_type": "text"
         },
         {
@@ -156,6 +247,56 @@
             "user_viewable": true,
             "user_editable": true,
             "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "MCP Enable",
+            "description": "Serve the MCP endpoint at /mcp, so AI assistants can upload and read pastes. The web page shows how to add it.",
+            "env_variable": "MCP_ENABLE",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "MCP Max Length",
+            "description": "Largest text the MCP upload_log tool accepts, in bytes. 4194304 is 4 MiB, 0 means that default. Decoding the JSON takes about 6 times the request size, so it is never more than Max Length, nor more than fits, 6 times over, in what one client may hold of the Memory Budget. Larger files are uploaded to /log with curl.",
+            "env_variable": "MCP_MAX_LENGTH",
+            "default_value": "4194304",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:0,1073741824",
+            "field_type": "text"
+        },
+        {
+            "name": "Not Found Limit",
+            "description": "Lookups of unknown keys one client may make within the Not Found Window. Past that its lookups get 429 for the Not Found Ban time, which stops key guessing. An IPv6 client counts as its whole /64. Uploads still work. -1 turns it off.",
+            "env_variable": "NOT_FOUND_LIMIT",
+            "default_value": "30",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:-1",
+            "field_type": "text"
+        },
+        {
+            "name": "Not Found Window",
+            "description": "Seconds over which unknown key lookups are counted. 900 is 15 minutes.",
+            "env_variable": "NOT_FOUND_WINDOW",
+            "default_value": "900",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:1",
+            "field_type": "text"
+        },
+        {
+            "name": "Not Found Ban",
+            "description": "Seconds a client IP that went over the Not Found Limit gets 429 on lookups. 3600 is one hour.",
+            "env_variable": "NOT_FOUND_BAN",
+            "default_value": "3600",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:1",
             "field_type": "text"
         }
     ]

@@ -24,6 +24,7 @@ type item struct {
 	ObjectID   any       `json:"_id,omitempty" bson:"_id,omitempty"`
 	Key        string    `json:"key" bson:"key"`
 	Value      []byte    `json:"value" bson:"value"`
+	Size       int64     `json:"size" bson:"size"`
 	Expiration time.Time `json:"expiration,omitempty" bson:"expiration,omitempty"`
 }
 
@@ -57,10 +58,11 @@ func NewMongoDBStorage(host string, port int, username string, password string, 
 
 	db := client.Database(database)
 
+	// Create the collection; on a restart it already exists
 	command := bson.M{"create": "entries"}
 	var result bson.M
-	if err := db.RunCommand(context.Background(), command).Decode(&result); err != nil {
-		panic(err)
+	if err := db.RunCommand(ctx, command).Decode(&result); err != nil && !isNamespaceExists(err) {
+		log.Fatal().Err(err).Str("database", database).Msg("Failed to create the MongoDB collection entries")
 	}
 
 	// Create collection if not exists
@@ -72,7 +74,7 @@ func NewMongoDBStorage(host string, port int, username string, password string, 
 	}
 
 	if _, err := collection.Indexes().CreateOne(ctx, indexModel); err != nil {
-		panic(err)
+		log.Fatal().Err(err).Str("database", database).Msg("Failed to create the MongoDB expiration index")
 	}
 
 	keyIndexModel := mongo.IndexModel{
@@ -81,10 +83,19 @@ func NewMongoDBStorage(host string, port int, username string, password string, 
 	}
 
 	if _, err := collection.Indexes().CreateOne(ctx, keyIndexModel); err != nil {
-		panic(err)
+		log.Fatal().Err(err).Str("database", database).Msg("Failed to create the MongoDB key index")
 	}
 
 	return &MongoDBStorage{db: db, collection: collection, expiration: expiration}
+}
+
+// namespaceExists is the MongoDB error code for creating a collection that exists
+const namespaceExists = 48
+
+// isNamespaceExists reports whether a MongoDB error means the collection already exists
+func isNamespaceExists(err error) bool {
+	var serverErr mongo.ServerError
+	return errors.As(err, &serverErr) && serverErr.HasErrorCode(namespaceExists)
 }
 
 func (s *MongoDBStorage) Set(key string, value string, skip_expiration bool) error {
@@ -102,6 +113,7 @@ func (s *MongoDBStorage) Set(key string, value string, skip_expiration bool) err
 	i := item{
 		Key:        key,
 		Value:      valueBytes,
+		Size:       int64(len(valueBytes)),
 		Expiration: expiration,
 	}
 
@@ -147,6 +159,34 @@ func (s *MongoDBStorage) Get(key string, skip_expiration bool) (string, error) {
 	}
 
 	return string(i.Value), nil
+}
+
+func (s *MongoDBStorage) Size(key string) (int64, error) {
+	ctx := context.Background()
+
+	// Entries written before the size field existed are measured on the server
+	projection := bson.M{
+		"_id":        0,
+		"expiration": 1,
+		"size":       bson.M{"$ifNull": bson.A{"$size", bson.M{"$binarySize": "$value"}}},
+	}
+	var res struct {
+		Size       int64     `bson:"size"`
+		Expiration time.Time `bson:"expiration,omitempty"`
+	}
+	err := s.collection.FindOne(ctx, bson.M{"key": key}, options.FindOne().SetProjection(projection)).Decode(&res)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return 0, notFound(err)
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	// Expired entries are deleted by the next Get or the TTL index
+	if !res.Expiration.IsZero() && res.Expiration.Unix() <= time.Now().Unix() {
+		return 0, ErrNotFound
+	}
+	return res.Size, nil
 }
 
 func (s *MongoDBStorage) Close() error {

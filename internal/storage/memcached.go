@@ -79,6 +79,18 @@ func (s *MemcachedStorage) Get(key string, skip_expiration bool) (string, error)
 	return string(item.Value), nil
 }
 
+// Size loads the item to measure it: memcached has no cheaper way, and its items are small (1 MiB by default)
+func (s *MemcachedStorage) Size(key string) (int64, error) {
+	item, err := s.client.Get(key)
+	if errors.Is(err, memcache.ErrCacheMiss) {
+		return 0, notFound(err)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(item.Value)), nil
+}
+
 func (s *MemcachedStorage) Close() error {
 	return s.client.Close()
 }

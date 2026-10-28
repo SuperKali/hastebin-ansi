@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ "main" ]
+    # A release tag vX.Y.Z publishes images tagged vX.Y.Z and pterodactyl-vX.Y.Z
+    tags: [ "v*" ]
   #schedule:
   #  - cron: '0 3 * * *' # Scheduled runs every day at 3am UTC
 
@@ -13,36 +15,52 @@ permissions:
 
 jobs:
   docker:
+    # Publish only from main or from a pushed release tag, never from a manual run on another branch
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     steps:
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - name: Image name
+      - name: Image tags
         id: image
         # ghcr.io needs a lowercase owner
         env:
           OWNER: ${{ github.repository_owner }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          echo "name=ghcr.io/${OWNER,,}/ansi-hastebin" >> "$GITHUB_OUTPUT"
-          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          name="ghcr.io/${OWNER,,}/ansi-hastebin"
+          if [ "$REF_TYPE" = "tag" ]; then
+            if [[ ! "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Release tags must look like v1.2.3, got $REF_NAME"
+              exit 1
+            fi
+            echo "default=$name:$REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "pterodactyl=$name:pterodactyl-$REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "default=$name:latest" >> "$GITHUB_OUTPUT"
+            echo "pterodactyl=$name:pterodactyl,$name:pterodactyl-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
       - name: Set up Docker Buildx
         id: buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       #- name: Log in to Docker Hub
-      #  uses: docker/login-action@v3
+      #  uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
       #  with:
       #    username: ${{ secrets.DOCKER_USERNAME }}
       #    password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Docker Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }} # github username or org
@@ -50,14 +68,14 @@ jobs:
 
       - name: Build and push
         id: docker_build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           pull: true # avoid bitrot with repeated cache hits
           push: true
-          tags: ${{ steps.image.outputs.name }}:latest,${{ steps.image.outputs.name }}:0.0.9 # @TODO: read from package.json
+          tags: ${{ steps.image.outputs.default }}
           labels: |
             org.opencontainers.image.title=ansi-hastebin
             org.opencontainers.image.description=${{ github.event.repository.description }}
@@ -70,7 +88,7 @@ jobs:
 
       - name: Build and push Pterodactyl image
         id: docker_build_pterodactyl
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: ./Dockerfile
@@ -78,7 +96,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           pull: true
           push: true
-          tags: ${{ steps.image.outputs.name }}:pterodactyl,${{ steps.image.outputs.name }}:pterodactyl-${{ steps.image.outputs.sha }}
+          tags: ${{ steps.image.outputs.pterodactyl }}
           labels: |
             org.opencontainers.image.title=ansi-hastebin
             org.opencontainers.image.description=${{ github.event.repository.description }}

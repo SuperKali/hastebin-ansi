@@ -1,61 +1,47 @@
-# Haste
+# hastebin
 
-Sharing code is a good thing, and it should be _really_ easy to do it.
-A lot of times, I want to show you something I'm seeing - and that's where we
-use pastebins.
+A paste server for logs and text. It keeps ANSI colours, so terminal
+output looks the way it did in your shell.
 
-Haste is the prettiest, easiest to use pastebin ever made.
+## In the browser
 
-## Basic Usage
+Type or paste your text and press Save (control + s). The address bar
+then holds the link to share.
 
-Type what you want me to see, click "Save", and then copy the URL.  Send that
-URL to someone and they'll see what you see.
+* control + n: new paste
+* control + d: duplicate the paste you are viewing and edit the copy
+* control + shift + r: open the plain text
 
-To make a new entry, click "New" (or type 'control + n')
+## From a shell
 
-## From the Console
+    curl --data-binary @build.log https://<this site>/log
+    dmesg | curl --data-binary @- https://<this site>/log
 
-Most of the time I want to show you some text, it's coming from my current
-console session.  We should make it really easy to take code from the console
-and send it to people.
+The server answers with the link. Use --data-binary, because -d drops
+newlines.
 
-`cat something | haste` # https://hastebin.com/1238193
+## Links
 
-You can even take this a step further, and cut out the last step of copying the
-URL with:
+* /<key> shows a paste with its colours
+* /<key>.sh, /<key>.py, /<key>.json and so on add syntax highlighting
+* /<key>.txt shows plain text
+* /raw/<key> returns the plain text, handy for curl and scripts
 
-* osx: `cat something | haste | pbcopy`
-* linux: `cat something | haste | xsel -b`
-* windows: check out [WinHaste](https://github.com/ajryan/WinHaste)
+## From your AI assistant
 
-After running that, the STDOUT output of `cat something` will show up at a URL
-which has been conveniently copied to your clipboard.
+Claude, Cursor, VS Code and other MCP clients can upload logs and read
+pastes for you. Add the /mcp address of this site as a remote MCP server
+(HTTP transport). The AI / MCP button at the top right shows the setup
+for each client, and /llms.txt has the same notes for agents.
 
-That's all there is to that, and you can install it with `gem install haste`
-right now.
-  * osx: you will need to have an up to date version of Xcode
-  * linux: you will need to have rubygems and ruby-devel installed
+## Privacy and retention
 
-## Duration
+Pastes are public to anyone who has the link. Remove passwords, tokens,
+API keys and other secrets before you upload. How long pastes are kept
+depends on how this server is configured, and they may be removed
+without notice.
 
-Pastes will stay for 30 days from their last view.  They may be removed earlier
-and without notice.
+## Source
 
-## Privacy
-
-While the contents of hastebin.com are not directly crawled by any search robot
-that obeys "robots.txt", there should be no great expectation of privacy.  Post
-things at your own risk. Not responsible for any loss of data or removed
-pastes.
-
-## Open Source
-
-Haste can easily be installed behind your network, and it's all open source!
-
-* [haste-client](https://github.com/seejohnrun/haste-client)
-* [haste-server](https://github.com/seejohnrun/haste-server)
-
-## Author
-
-Code by John Crepezzi <john.crepezzi@gmail.com>
-Key Design by Brian Dawson <bridawson@gmail.com>
+https://github.com/SuperKali/hastebin-ansi, based on haste-server by
+John Crepezzi (https://github.com/seejohnrun/haste-server).

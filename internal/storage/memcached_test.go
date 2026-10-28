@@ -54,6 +54,12 @@ func TestMemcachedStorage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "testValue", val)
 
+	size, err := store.Size("testKey")
+	require.NoError(t, err)
+	require.EqualValues(t, len("testValue"), size)
+	_, err = store.Size("missingKey")
+	require.ErrorIs(t, err, ErrNotFound)
+
 	// Test if expiration is updated after Get
 	time.Sleep(1 * time.Second)
 	_, err = store.Get("testKey", false)

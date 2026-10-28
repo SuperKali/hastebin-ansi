@@ -14,6 +14,28 @@ haste_document.prototype.htmlEscape = function (s) {
         .replace(/"/g, '&quot;');
 };
 
+// Pastes longer than this are shown as plain text, cut to this length,
+// because highlighting them would freeze the browser
+haste_document.largePaste = 1 << 20;
+
+// Returns the start of data to show for a large paste, or null for a normal one.
+// truncated means the server already cut the paste, so it is large whatever its length here.
+haste_document.largePreview = function (data, truncated) {
+    if (!truncated && data.length <= haste_document.largePaste) {
+        return null;
+    }
+    // End on a whole line when there is one
+    var cut = data.lastIndexOf('\n', haste_document.largePaste);
+    if (cut < haste_document.largePaste / 2) {
+        cut = haste_document.largePaste;
+    }
+    // Drop ANSI color codes: shown raw they are noise and break the line height
+    return data.slice(0, cut).replace(haste_document.ansiPattern, '');
+};
+
+// CSI, OSC and two byte escape sequences, plus any stray escape character
+haste_document.ansiPattern = /\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])?/g;
+
 // Get this document from the server and lock it here
 haste_document.prototype.load = function (key, callback, lang) {
     console.log("Loading document key", key, "lang", lang);
@@ -24,6 +46,18 @@ haste_document.prototype.load = function (key, callback, lang) {
             _this.locked = true;
             _this.key = key;
             _this.data = res.data;
+            // A paste over 1 MiB comes cut to its first 1 MiB; /raw has the whole file
+            _this.truncated = res.truncated === true;
+
+            var preview = haste_document.largePreview(res.data, _this.truncated);
+            if (preview !== null) {
+                callback({
+                    value: _this.htmlEscape(preview), key: key, language: lang,
+                    lineCount: preview.split('\n').length, large: true,
+                    size: _this.truncated ? res.size : res.data.length
+                });
+                return;
+            }
 
             let final_language;
             let highlighted;
@@ -33,13 +67,13 @@ haste_document.prototype.load = function (key, callback, lang) {
                 high = {value: _this.htmlEscape(res.data)};
                 final_language = high.language;
                 highlighted = high.value;
-            } else if (lang !== undefined && lang !== 'ans') {
+            } else if (lang !== undefined && lang !== 'ans' && hljs.getLanguage(lang)) {
                 console.log("Highlighting as", lang);
                 high = hljs.highlight(lang, res.data);
                 final_language = high.language;
                 highlighted = high.value;
             } else {
-                // don't guess, use ANSI
+                // don't guess, use ANSI (also for unknown extensions such as .log)
                 console.log("Highlighting ANSI");
                 final_language = "ans"
                 highlighted = new Filter({}).toHtml(res.data);
@@ -69,9 +103,13 @@ haste_document.prototype.save = function (data, callback) {
         type: 'post', data: data, dataType: 'json', contentType: 'text/plain; charset=utf-8', success: function (res) {
             _this.locked = true;
             _this.key = res.key;
-            var high = hljs.highlightAuto(data);
+            // Guessing the language of a large paste would freeze the browser
+            var preview = haste_document.largePreview(data);
+            var high = preview === null ? hljs.highlightAuto(data) : {value: _this.htmlEscape(preview)};
             callback(null, {
-                value: high.value, key: res.key, language: high.language, lineCount: data.split('\n').length
+                value: high.value, key: res.key, language: high.language,
+                lineCount: (preview === null ? data : preview).split('\n').length,
+                large: preview !== null, size: data.length
             });
         }, error: function (res) {
             try {
@@ -106,9 +144,9 @@ haste.prototype.setTitle = function (ext) {
     document.title = title;
 };
 
-// Show a message box
+// Show a message box. The message is text, never HTML: it can come from the server.
 haste.prototype.showMessage = function (msg, cls) {
-    var msgBox = $('<li class="' + (cls || 'info') + '">' + msg + '</li>');
+    var msgBox = $('<li></li>').addClass(cls || 'info').text(msg);
     $('#messages').prepend(msgBox);
     setTimeout(function () {
         msgBox.slideUp('fast', function () {
@@ -119,12 +157,12 @@ haste.prototype.showMessage = function (msg, cls) {
 
 // Show the light key
 haste.prototype.lightKey = function () {
-    this.configureKey(['new', 'save']);
+    this.configureKey(['new', 'save', 'mcp']);
 };
 
 // Show the full key
 haste.prototype.fullKey = function () {
-    this.configureKey(['new', 'duplicate', 'twitter', 'raw']);
+    this.configureKey(['new', 'duplicate', 'twitter', 'raw', 'mcp']);
 };
 
 // Set the key up for certain things to be enabled
@@ -152,6 +190,7 @@ haste.prototype.newDocument = function (hideHistory) {
     }
     this.setTitle();
     this.lightKey();
+    this.hideLargeNotice();
     this.$textarea.val('').show('fast', function () {
         this.focus();
     });
@@ -202,7 +241,7 @@ haste.extensionMap = {
 // If not found, return the type itself - which we'll place as the extension
 haste.prototype.lookupExtensionByType = function (type) {
     for (let key in haste.extensionMap) {
-        if (haste.extensionMap[key] === type) {
+        if (Object.prototype.hasOwnProperty.call(haste.extensionMap, key) && haste.extensionMap[key] === type) {
             console.log("Found extension", key, "for type", type);
             return key;
         }
@@ -213,7 +252,9 @@ haste.prototype.lookupExtensionByType = function (type) {
 // Look up the type for a given extension
 // If not found, return the extension - which we'll attempt to use as the type
 haste.prototype.lookupTypeByExtension = function (ext) {
-    let result = haste.extensionMap[ext] || ext;
+    // Own keys only: an extension such as "constructor" or "__proto__" must not reach Object.prototype
+    let known = ext !== undefined && Object.prototype.hasOwnProperty.call(haste.extensionMap, ext);
+    let result = (known && haste.extensionMap[ext]) || ext;
     console.log("Found type", result, "for extension", ext);
     return result;
 };
@@ -233,6 +274,22 @@ haste.prototype.removeLineNumbers = function () {
     $('#linenos').html('&gt;');
 };
 
+// Tell the reader that a large paste is cut, with a link to the full text
+haste.prototype.showLargeNotice = function (key, size) {
+    var mb = (size / (1 << 20)).toFixed(1);
+    var shown = (haste_document.largePaste / (1 << 20)).toFixed(0);
+    var $notice = $('#large-notice');
+    $notice.find('.large-text').text('Large paste (' + mb + ' MB): showing the first ' + shown + ' MB as plain text, without colors.');
+    $notice.find('.large-raw').attr('href', '/raw/' + encodeURIComponent(key));
+    $notice.prop('hidden', false);
+    $(document.body).addClass('has-large-notice');
+};
+
+haste.prototype.hideLargeNotice = function () {
+    $('#large-notice').prop('hidden', true);
+    $(document.body).removeClass('has-large-notice');
+};
+
 // Load a document and show it
 haste.prototype.loadDocument = function (key) {
     console.log("LOADING DOCUMENT");
@@ -250,6 +307,11 @@ haste.prototype.loadDocument = function (key) {
             _this.$textarea.val('').hide();
             _this.$box.show().focus();
             _this.addLineNumbers(ret.lineCount);
+            if (ret.large) {
+                _this.showLargeNotice(ret.key, ret.size);
+            } else {
+                _this.hideLargeNotice();
+            }
         } else {
             _this.newDocument();
         }
@@ -258,11 +320,25 @@ haste.prototype.loadDocument = function (key) {
 
 // Duplicate the current document - only if locked
 haste.prototype.duplicateDocument = function () {
-    if (this.doc.locked) {
+    if (!this.doc.locked) {
+        return;
+    }
+    var _this = this;
+    if (!this.doc.truncated) {
         var currentData = this.doc.data;
         this.newDocument();
         this.$textarea.val(currentData);
+        return;
     }
+    // Only the start of a large paste was loaded: fetch the whole text
+    $.ajax('/raw/' + encodeURIComponent(this.doc.key), {
+        type: 'get', dataType: 'text', success: function (data) {
+            _this.newDocument();
+            _this.$textarea.val(data);
+        }, error: function () {
+            _this.showMessage('Could not load the full paste, try again.', 'error');
+        }
+    });
 };
 
 // Lock the current document
@@ -284,6 +360,9 @@ haste.prototype.lockDocument = function () {
             _this.$textarea.val('').hide();
             _this.$box.show().focus();
             _this.addLineNumbers(ret.lineCount);
+            if (ret.large) {
+                _this.showLargeNotice(ret.key, ret.size);
+            }
         }
     });
 };
@@ -322,6 +401,12 @@ haste.prototype.configureButtons = function () {
         }, shortcutDescription: 'control + shift + t', action: function () {
             window.open('https://twitter.com/share?url=' + encodeURI(window.location.href));
         }
+    }, {
+        $where: $('#box2 .mcp'), label: 'AI / MCP', shortcutDescription: 'for AI assistants', action: function () {
+            if (_this.mcpPanel) {
+                _this.mcpPanel.open();
+            }
+        }
     }];
     for (var i = 0; i < this.buttons.length; i++) {
         this.configureButton(this.buttons[i]);
@@ -336,15 +421,25 @@ haste.prototype.configureButton = function (options) {
             options.action();
         }
     });
-    // Show the label
-    options.$where.mouseenter(function () {
+    // Show the label, on hover and on keyboard focus
+    var showLabel = function () {
         $('#box3 .label').text(options.label);
         $('#box3 .shortcut').text(options.shortcutDescription || '');
         $('#box3').show();
         $(this).append($('#pointer').remove().show());
+    };
+    options.$where.on('mouseenter', showLabel);
+    options.$where.on('focus', function () {
+        try {
+            if (!this.matches(':focus-visible')) {
+                return;
+            }
+        } catch (e) { /* old browser without :focus-visible */
+        }
+        showLabel.call(this);
     });
     // Hide the label
-    options.$where.mouseleave(function () {
+    options.$where.on('mouseleave blur', function () {
         $('#box3').hide();
         $('#pointer').hide();
     });
@@ -355,6 +450,10 @@ haste.prototype.configureShortcuts = function () {
     var _this = this;
     $(document.body).keydown(function (evt) {
         var button;
+        // The MCP panel handles its own keys
+        if (_this.mcpPanel && _this.mcpPanel.isOpen()) {
+            return;
+        }
         for (var i = 0; i < _this.buttons.length; i++) {
             button = _this.buttons[i];
             if (button.shortcut && button.shortcut(evt)) {
@@ -362,6 +461,177 @@ haste.prototype.configureShortcuts = function () {
                 button.action();
                 return;
             }
+        }
+    });
+};
+
+// Ask the server which features are on, then show the MCP button if MCP is
+haste.prototype.loadInfo = function () {
+    var _this = this;
+    $.ajax('/api/info', {
+        type: 'get', dataType: 'json', success: function (info) {
+            if (info && info.mcp) {
+                _this.mcpPanel = new mcp_panel($('#box2 .mcp'));
+                $('#box2 .mcp').prop('hidden', false);
+                $(document.body).addClass('mcp-on');
+            }
+        }
+    });
+};
+
+///// The "AI / MCP" panel: how to add this server to an AI assistant
+
+var mcp_panel = function ($button) {
+    this.$button = $button;
+    this.$overlay = $('#mcp-overlay');
+    this.$panel = $('#mcp-panel');
+    this.$tabs = this.$panel.find('[role="tab"]');
+    this.$live = this.$panel.find('.mcp-live');
+    this.fillSnippets(window.location.origin);
+    this.configure();
+};
+
+// Put the site address into every snippet
+mcp_panel.prototype.fillSnippets = function (origin) {
+    this.$panel.find('.mcp-snippet').each(function () {
+        var $snippet = $(this);
+        var text = $snippet.attr('data-template').split('{origin}').join(origin);
+        if ($snippet.attr('data-json')) {
+            text = JSON.stringify(JSON.parse(text), null, 2);
+        }
+        $snippet.text(text);
+    });
+};
+
+mcp_panel.prototype.isOpen = function () {
+    return !this.$overlay.prop('hidden');
+};
+
+mcp_panel.prototype.open = function () {
+    this.$overlay.prop('hidden', false);
+    this.$button.attr('aria-expanded', 'true');
+    $(document.body).addClass('mcp-open');
+    this.$panel.focus();
+};
+
+mcp_panel.prototype.close = function () {
+    this.$overlay.prop('hidden', true);
+    this.$button.attr('aria-expanded', 'false');
+    $(document.body).removeClass('mcp-open');
+    this.$button.focus();
+};
+
+mcp_panel.prototype.selectTab = function ($tab) {
+    this.$tabs.each(function () {
+        var $t = $(this);
+        var selected = $t.is($tab);
+        $t.attr('aria-selected', selected ? 'true' : 'false').attr('tabindex', selected ? '0' : '-1');
+        $('#' + $t.attr('aria-controls')).prop('hidden', !selected);
+    });
+};
+
+// Copy text to the clipboard, with a fallback for browsers without the async API
+mcp_panel.prototype.copy = function (text, done) {
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(function () {
+            done(true);
+        }, function () {
+            done(false);
+        });
+        return;
+    }
+    var $tmp = $('<textarea class="mcp-offscreen" readonly></textarea>').val(text).appendTo(this.$panel);
+    $tmp[0].select();
+    var ok = false;
+    try {
+        ok = document.execCommand('copy');
+    } catch (e) {
+        ok = false;
+    }
+    $tmp.remove();
+    done(ok);
+};
+
+mcp_panel.prototype.configure = function () {
+    var _this = this;
+
+    this.$panel.find('.mcp-close').on('click', function () {
+        _this.close();
+    });
+
+    // A click on the backdrop, outside the panel, closes it
+    this.$overlay.on('mousedown', function (evt) {
+        if (evt.target === _this.$overlay[0]) {
+            _this.close();
+        }
+    });
+
+    this.$tabs.on('click', function () {
+        _this.selectTab($(this));
+    });
+    this.$tabs.on('keydown', function (evt) {
+        var index = _this.$tabs.index(this);
+        var next = null;
+        if (evt.key === 'ArrowRight') {
+            next = (index + 1) % _this.$tabs.length;
+        } else if (evt.key === 'ArrowLeft') {
+            next = (index - 1 + _this.$tabs.length) % _this.$tabs.length;
+        } else if (evt.key === 'Home') {
+            next = 0;
+        } else if (evt.key === 'End') {
+            next = _this.$tabs.length - 1;
+        }
+        if (next !== null) {
+            evt.preventDefault();
+            var $next = _this.$tabs.eq(next);
+            _this.selectTab($next);
+            $next.focus();
+        }
+    });
+
+    this.$panel.find('.mcp-copy').on('click', function () {
+        var $button = $(this);
+        var text = $button.siblings('.mcp-snippet').text();
+        _this.copy(text, function (ok) {
+            $button.text(ok ? 'Copied' : 'Press Ctrl+C').toggleClass('done', ok);
+            _this.$live.text(ok ? 'Copied to the clipboard' : 'Copy failed, select the text and copy it');
+            clearTimeout($button.data('timer'));
+            $button.data('timer', setTimeout(function () {
+                $button.text('Copy').removeClass('done');
+            }, 1600));
+            if (!ok) {
+                var range = document.createRange();
+                range.selectNodeContents($button.siblings('.mcp-snippet')[0]);
+                var sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }
+        });
+    });
+
+    // Esc closes; Tab stays inside the panel
+    this.$overlay.on('keydown', function (evt) {
+        if (evt.key === 'Escape') {
+            evt.preventDefault();
+            _this.close();
+            return;
+        }
+        if (evt.key !== 'Tab') {
+            return;
+        }
+        var $focusable = _this.$panel.find('button, a[href], [tabindex="0"]').filter(':visible').not('[tabindex="-1"]');
+        if ($focusable.length === 0) {
+            return;
+        }
+        var first = $focusable[0];
+        var last = $focusable[$focusable.length - 1];
+        var active = document.activeElement;
+        if (evt.shiftKey && (active === first || active === _this.$panel[0])) {
+            evt.preventDefault();
+            last.focus();
+        } else if (!evt.shiftKey && active === last) {
+            evt.preventDefault();
+            first.focus();
         }
     });
 };
