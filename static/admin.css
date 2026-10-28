@@ -19,7 +19,6 @@
 .lookup {
     display: flex;
     gap: 10px;
-    max-width: 820px;
     margin-bottom: 16px;
 }
 
