@@ -48,6 +48,9 @@ type Server struct {
 	mux            *chi.Mux
 	trustedProxies []*net.IPNet
 	realIPHeader   string
+
+	// Version is the build version, logged at start and shown in /api/info
+	Version string
 }
 
 // newHTTPServer creates an http.Server with safe timeouts
@@ -96,6 +99,7 @@ func NewServer(config *config.Config, storage storage.Storage, keyGenerator keyg
 		mux:            mux,
 		trustedProxies: trustedProxies,
 		realIPHeader:   realIPHeader,
+		Version:        "dev",
 	}
 }
 
@@ -163,6 +167,7 @@ func (s *Server) RegisterRoutes() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		json.NewEncoder(w).Encode(map[string]any{
+			"version":        s.Version,
 			"mcp":            s.config.MCPEnable,
 			"max_length":     s.config.MaxLength,
 			"mcp_max_length": mcpMaxLength,
@@ -177,7 +182,8 @@ func (s *Server) RegisterRoutes() {
 	// Register static files
 	fileServer := http.FileServer(http.FS(static.StaticFS))
 
-	s.mux.Get("/*", func(w http.ResponseWriter, r *http.Request) {
+	// HEAD gets the same answer without the body, which net/http drops
+	serveWeb := func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")
 		if _, err := static.StaticFS.Open(path); err == nil {
 			fileServer.ServeHTTP(w, r)
@@ -196,7 +202,9 @@ func (s *Server) RegisterRoutes() {
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
-	})
+	}
+	s.mux.Get("/*", serveWeb)
+	s.mux.Head("/*", serveWeb)
 }
 
 const (
@@ -234,7 +242,7 @@ func (s *Server) Start() {
 		}()
 	}
 
-	log.Info().Str("host", s.config.Host).Int("port", s.config.Port).Msg("Starting server")
+	log.Info().Str("version", s.Version).Str("host", s.config.Host).Int("port", s.config.Port).Msg("Starting server")
 
 	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal().Err(err).Msg("Failed to start server")
@@ -467,11 +475,34 @@ func (f *redactingFormatter) NewLogEntry(r *http.Request) middleware.LogEntry {
 	return f.next.NewLogEntry(&logged)
 }
 
-// redactPath replaces the paste key in /raw/<key>, /documents/<key> and
-// /<key> with #<first 8 hex digits of its SHA-256>, keeping any extension.
-// The same key always gives the same hash, so requests can still be followed.
+// keyRoutes are the routes whose next path segment is a paste key, which may
+// be followed by more path
+var keyRoutes = []string{"api/v1/admin/pastes/", "api/v1/pastes/", "dashboard/p/"}
+
+// redactPath replaces the paste key in /raw/<key>, /documents/<key>, /<key>,
+// /api/v1/pastes/<key>/..., /api/v1/admin/pastes/<key>/... and
+// /dashboard/p/<key>/... with #<first 8 hex digits of its SHA-256>, keeping
+// any extension and the rest of the path. The same key always gives the same
+// hash, so requests can still be followed.
 func redactPath(path string) string {
 	rest := strings.TrimPrefix(path, "/")
+	for _, route := range keyRoutes {
+		after, ok := strings.CutPrefix(rest, route)
+		if !ok {
+			continue
+		}
+		segment, tail, hasTail := strings.Cut(after, "/")
+		// POST /api/v1/pastes/delete is the bulk delete, not a paste
+		if segment == "" || (route == "api/v1/pastes/" && segment == "delete" && !hasTail) {
+			return path
+		}
+		redacted := "/" + route + redactKey(segment)
+		if hasTail {
+			redacted += "/" + tail
+		}
+		return redacted
+	}
+
 	prefix := "/"
 	for _, route := range []string{"raw/", "documents/"} {
 		if strings.HasPrefix(rest, route) {
@@ -486,10 +517,15 @@ func redactPath(path string) string {
 	if prefix == "/" && !isPastePage(rest) {
 		return path
 	}
+	return prefix + redactKey(rest)
+}
 
-	key, ext, hasExt := strings.Cut(rest, ".")
+// redactKey turns a path segment holding a key, cut at the first dot like
+// every route cuts it, into #<first 8 hex digits of its SHA-256> plus any extension
+func redactKey(segment string) string {
+	key, ext, hasExt := strings.Cut(segment, ".")
 	sum := sha256.Sum256([]byte(key))
-	redacted := prefix + "#" + hex.EncodeToString(sum[:4])
+	redacted := "#" + hex.EncodeToString(sum[:4])
 	if hasExt {
 		redacted += "." + ext
 	}
@@ -500,7 +536,7 @@ func redactPath(path string) string {
 // route or a file of the web page
 func isPastePage(name string) bool {
 	switch name {
-	case "documents", "log", "mcp", "health", "metrics", "api":
+	case "documents", "log", "mcp", "health", "metrics", "api", "dashboard", "admin":
 		return false
 	}
 	if file, err := static.StaticFS.Open(name); err == nil {

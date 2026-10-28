@@ -8,6 +8,9 @@ FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:a2012b4a1d1f9f7e9f44e0d
 ARG TARGETOS
 ARG TARGETARCH
 
+# The version reported in the log and /api/info: the release tag or the commit
+ARG VERSION=dev
+
 WORKDIR /src
 
 # Install necessary dependencies
@@ -19,7 +22,7 @@ RUN go mod download
 COPY . .
 
 # Build the binary
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -ldflags "-s -w" -o ./hastebin ./cmd/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -ldflags "-s -w -X main.version=${VERSION}" -o ./hastebin ./cmd/main.go
 
 # Image for Pterodactyl (Wings): docker build --target pterodactyl .
 # alpine:3.22

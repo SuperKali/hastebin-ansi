@@ -801,11 +801,23 @@ func TestHTTPEndpoint(t *testing.T) {
 	resp.Body.Close()
 	require.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
 	require.Equal(t, "POST", resp.Header.Get("Allow"))
+	require.Equal(t, "private, no-store", resp.Header.Get("Cache-Control"))
+
+	// Tool answers carry paste content: no cache may keep them, whatever the SDK sets
+	req, err := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "private, no-store", resp.Header.Get("Cache-Control"))
 
 	// The request body is limited before it is parsed
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"upload_log","arguments":{"content":"` +
 		strings.Repeat("a", 2*1024+JSONOverhead) + `"}}}`
-	req, err := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(body))
+	req, err = http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -813,6 +825,7 @@ func TestHTTPEndpoint(t *testing.T) {
 	require.NoError(t, err)
 	resp.Body.Close()
 	require.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+	require.Equal(t, "private, no-store", resp.Header.Get("Cache-Control"))
 }
 
 func TestLineReader(t *testing.T) {

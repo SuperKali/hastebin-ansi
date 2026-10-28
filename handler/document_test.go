@@ -1128,3 +1128,85 @@ func TestJSONStringWriterPieces(t *testing.T) {
 		require.Equal(t, whole.String(), got.String(), "pieces of %d", size)
 	}
 }
+
+func TestReceiveInto(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		store func(t *testing.T) storage.Storage
+	}{
+		{"in memory", func(*testing.T) storage.Storage { return &mockStorage{data: make(map[string]string)} }},
+		{"streamed to file", func(t *testing.T) storage.Storage {
+			store := storage.NewFileStorage(t.TempDir(), 0)
+			t.Cleanup(func() { store.Close() })
+			return store
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tc.store(t)
+			h := NewDocumentHandler(6, 10, store, &sequenceKeyGenerator{})
+			h.Quota = NewUploadQuota(100, time.Hour)
+
+			receive := func(u Uploader, key, body string) (*httptest.ResponseRecorder, string) {
+				req := httptest.NewRequest(http.MethodPost, "/documents", strings.NewReader(body))
+				req.RemoteAddr = "192.0.2.1:1"
+				rec := httptest.NewRecorder()
+				got, ok := h.ReceiveInto(rec, req, u, key)
+				require.Equal(t, ok, got != "")
+				return rec, got
+			}
+
+			// An uploader's MaxLength replaces the handler's
+			rec, _ := receive(Uploader{IP: "192.0.2.1"}, "", "12345678901")
+			require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+			_, key := receive(Uploader{IP: "192.0.2.1", MaxLength: 20}, "", "12345678901")
+			require.Equal(t, "key1", key)
+			rec, _ = receive(Uploader{IP: "192.0.2.1", MaxLength: 20}, "", strings.Repeat("a", 21))
+			require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+
+			// A given key is stored as is, replacing what was there
+			_, key = receive(Uploader{IP: "192.0.2.1"}, "key1", "new")
+			require.Equal(t, "key1", key)
+			got, err := store.Get("key1", true)
+			require.NoError(t, err)
+			require.Equal(t, "new", got)
+
+			// The quota counts by QuotaKey when it is set, apart from the IP
+			_, key = receive(Uploader{IP: "192.0.2.1", QuotaKey: "user:1", MaxLength: 100}, "", strings.Repeat("b", 100))
+			require.NotEmpty(t, key)
+			rec, _ = receive(Uploader{IP: "192.0.2.1", QuotaKey: "user:1"}, "", "c")
+			require.Equal(t, http.StatusTooManyRequests, rec.Code)
+			_, key = receive(Uploader{IP: "192.0.2.1"}, "", "c")
+			require.NotEmpty(t, key)
+
+			// An empty body is refused and leaves nothing behind
+			rec, _ = receive(Uploader{IP: "192.0.2.1"}, "empty", "")
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			_, err = store.Size("empty")
+			require.ErrorIs(t, err, storage.ErrNotFound)
+		})
+	}
+}
+
+func TestNoStore(t *testing.T) {
+	_, router := fileHandler(t, 1024)
+	created := sendRequest(router, http.MethodPost, "/documents", strings.NewReader("hello"))
+	require.Equal(t, http.StatusOK, created.Code)
+	var res map[string]string
+	require.NoError(t, json.NewDecoder(created.Body).Decode(&res))
+	key := res["key"]
+
+	// Every answer about a paste, found or not, anonymous included
+	for _, rec := range []*httptest.ResponseRecorder{
+		created,
+		sendRequest(router, http.MethodPost, "/log", strings.NewReader("hello")),
+		sendRequest(router, http.MethodPut, "/log", strings.NewReader("hello")),
+		sendRequest(router, http.MethodGet, "/raw/"+key+".js", nil),
+		sendRequest(router, http.MethodHead, "/raw/"+key+".css", nil),
+		sendRequest(router, http.MethodGet, "/documents/"+key, nil),
+		sendRequest(router, http.MethodHead, "/documents/"+key, nil),
+		sendRequest(router, http.MethodGet, "/raw/missing.js", nil),
+		sendRequest(router, http.MethodGet, "/documents/missing", nil),
+	} {
+		require.Equal(t, "private, no-store", rec.Header().Get("Cache-Control"))
+	}
+}

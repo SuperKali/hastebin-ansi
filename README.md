@@ -1,9 +1,23 @@
 # hastebin-ansi
 
-A paste server for logs and text, written in Go. It keeps ANSI colours, so terminal output looks the way it did in your shell.
-AI assistants can upload and read pastes through its MCP endpoint.
+An evolved hastebin for logs: ANSI colours, AI assistants over MCP and abuse protection built in.
+
+Classic hastebin ([seejohnrun/haste-server](https://github.com/seejohnrun/haste-server)) is a simple paste site: you paste text and get a short link. hastebin-ansi keeps that workflow and adds what a public log service needs: terminal colours, uploads from a shell, access for AI assistants, and limits that stop one client from filling the server.
 
 Public instance: <https://paste.superkali.me>
+
+## What it adds over classic hastebin
+
+- ANSI colour rendering, so logs look the way they did in your terminal.
+- Uploads from any shell: `curl --data-binary @file https://<host>/log` prints the link.
+- A public MCP server: AI assistants can upload logs, read pastes in pages and search them.
+- Large logs. With file storage, uploads are streamed to disk up to `max_length` (32 MiB in the Pterodactyl egg). Pastes over 1 MiB open in a light plain text view with a link to the raw file.
+- Abuse protection: per-client request and upload limits, upload slots, an hourly upload quota and a ban for clients that guess keys. A client is an IPv4 address or an IPv6 /64. In a container, the memory budget is capped at 40 percent of its memory limit.
+- The real client IP behind Cloudflare, cloudflared or another trusted proxy.
+- Security headers with a Content Security Policy, SRI on the CDN scripts, paste keys hidden in the access log, and `noindex` for search engines.
+- Six storage backends: file, Redis, Memcached, MongoDB, PostgreSQL and S3.
+- Docker, docker compose and a Pterodactyl egg, with images for amd64 and arm64.
+- Written in Go: a single binary with the web page built in.
 
 ## Quick use
 

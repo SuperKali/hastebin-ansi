@@ -14,6 +14,11 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+var (
+	_ Storage = (*MongoDBStorage)(nil)
+	_ Deleter = (*MongoDBStorage)(nil)
+)
+
 type MongoDBStorage struct {
 	db         *mongo.Database
 	collection *mongo.Collection
@@ -187,6 +192,12 @@ func (s *MongoDBStorage) Size(key string) (int64, error) {
 		return 0, ErrNotFound
 	}
 	return res.Size, nil
+}
+
+// Delete removes the entry of key. A missing key is not an error.
+func (s *MongoDBStorage) Delete(key string) error {
+	_, err := s.collection.DeleteOne(context.Background(), bson.M{"key": key})
+	return err
 }
 
 func (s *MongoDBStorage) Close() error {

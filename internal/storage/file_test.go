@@ -180,6 +180,78 @@ func TestFileStorageJanitor(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestFileStorageDelete(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFileStorage(dir, time.Hour).(*FileStorage)
+	t.Cleanup(func() { store.Close() })
+
+	requireDelete(t, store)
+	_, err := os.Stat(filepath.Join(dir, md5Hex("deleteKey")))
+	require.ErrorIs(t, err, fs.ErrNotExist)
+
+	// Deleting a pinned paste drops its pin too
+	require.NoError(t, store.Set("about", "static page", true))
+	require.NoError(t, store.Delete("about"))
+	require.False(t, store.isPinned(md5Hex("about")))
+}
+
+func TestFileStorageKeep(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFileStorage(dir, time.Hour).(*FileStorage)
+	t.Cleanup(func() { store.Close() })
+
+	// A key can be pinned before it is stored, like pins set at startup
+	store.Keep("owned", true)
+	require.NoError(t, store.Set("owned", "owned paste", false))
+	require.NoError(t, store.Set("released", "released paste", false))
+	store.Keep("released", true)
+	require.NoError(t, store.Set("about", "static page", true))
+	for _, key := range []string{"owned", "released", "about"} {
+		age(t, dir, key, 2*time.Hour)
+	}
+	store.Keep("released", false)
+
+	// Pinned pastes are found by every read and left alone by the janitor
+	require.Equal(t, 1, store.sweep(time.Now()))
+	for _, key := range []string{"owned", "about"} {
+		_, err := store.Size(key)
+		require.NoError(t, err, key)
+		file, _, err := store.Open(key)
+		require.NoError(t, err, key)
+		file.Close()
+	}
+	_, err := store.Size("released")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	// A read does not refresh a pinned paste, it has no lifetime to refresh
+	require.WithinDuration(t, time.Now().Add(-2*time.Hour), modTime(t, dir, "owned"), time.Minute)
+
+	// Unpinned, it expires like any other paste
+	store.Keep("owned", false)
+	require.Equal(t, 1, store.sweep(time.Now()))
+	_, err = store.Get("owned", false)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFileStorageJanitorKeepsPinned(t *testing.T) {
+	// Built by hand to run the janitor loop itself on a short interval
+	dir := t.TempDir()
+	store := &FileStorage{path: dir, expiration: time.Minute, pinned: make(map[string]bool),
+		stop: make(chan struct{}), diskFree: diskFree}
+	t.Cleanup(func() { store.Close() })
+	require.NoError(t, store.Set("about", "static page", true))
+	require.NoError(t, store.Set("old", "old paste", false))
+	age(t, dir, "about", 2*time.Hour)
+	age(t, dir, "old", 2*time.Hour)
+
+	go store.janitor(10 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(filepath.Join(dir, md5Hex("old")))
+		return errors.Is(err, fs.ErrNotExist)
+	}, 5*time.Second, 10*time.Millisecond)
+	require.FileExists(t, filepath.Join(dir, md5Hex("about")))
+}
+
 func TestIsPasteFileName(t *testing.T) {
 	require.True(t, isPasteFileName(md5Hex("abc")))
 	require.False(t, isPasteFileName(".write-test-123"))

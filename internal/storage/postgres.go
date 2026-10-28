@@ -16,6 +16,7 @@ import (
 const setSQLQuery = "INSERT INTO entries (key, value, expiration) VALUES ($1, $2, $3) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, expiration = EXCLUDED.expiration"
 const getSQLQuery = "SELECT id, value, expiration FROM entries WHERE key = $1"
 const deleteSQLQuery = "DELETE FROM entries WHERE id = $1"
+const deleteKeySQLQuery = "DELETE FROM entries WHERE key = $1"
 const updateSQLQuery = "UPDATE entries SET expiration = $1 WHERE id = $2"
 const sizeSQLQuery = "SELECT COALESCE(octet_length(value), 0), expiration FROM entries WHERE key = $1"
 
@@ -25,7 +26,10 @@ type PostgresStorage struct {
 	expiration int
 }
 
-var _ Storage = (*PostgresStorage)(nil)
+var (
+	_ Storage = (*PostgresStorage)(nil)
+	_ Deleter = (*PostgresStorage)(nil)
+)
 
 func NewPostgresStorage(host string, port int, username string, password string, database string, expiration int) *PostgresStorage {
 	pool, err := pgxpool.New(context.Background(), postgresDSN(host, port, username, password, database))
@@ -132,6 +136,14 @@ func (s *PostgresStorage) Size(key string) (int64, error) {
 		return 0, ErrNotFound
 	}
 	return size, nil
+}
+
+// Delete removes the entry of key. A missing key is not an error.
+func (s *PostgresStorage) Delete(key string) error {
+	ctx := context.Background() // TODO: Add timeout control
+
+	_, err := s.pool.Exec(ctx, deleteKeySQLQuery, key)
+	return err
 }
 
 func (s *PostgresStorage) Close() error {

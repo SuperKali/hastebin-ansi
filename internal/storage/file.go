@@ -43,9 +43,10 @@ type FileStorage struct {
 	// expiration is how long a paste lives after it was last written or read, 0 means forever
 	expiration time.Duration
 
-	// static holds the file names of the static documents, which never expire
+	// pinned holds the file names of the pastes that never expire: the static
+	// documents, and any key pinned with Keep
 	mu     sync.Mutex
-	static map[string]bool
+	pinned map[string]bool
 
 	stop      chan struct{}
 	closeOnce sync.Once
@@ -66,6 +67,8 @@ var (
 	_ Opener       = (*FileStorage)(nil)
 	_ SpaceChecker = (*FileStorage)(nil)
 	_ Writer       = (*FileStorage)(nil)
+	_ Deleter      = (*FileStorage)(nil)
+	_ Keeper       = (*FileStorage)(nil)
 )
 
 func md5Hex(input string) string {
@@ -75,7 +78,8 @@ func md5Hex(input string) string {
 
 // NewFileStorage stores pastes as files in path. With an expiration above 0, a
 // paste file not written or read for that long is gone: reads no longer find
-// it, and a janitor deletes it every 10 minutes. Static documents never expire.
+// it, and a janitor deletes it every 10 minutes. Static documents and keys
+// pinned with Keep never expire.
 // Temp files of uploads cut by a crash are deleted at startup, and later by
 // the janitor once they have not been written for an hour.
 func NewFileStorage(path string, expiration time.Duration) Storage {
@@ -90,7 +94,7 @@ func NewFileStorage(path string, expiration time.Duration) Storage {
 	s := &FileStorage{
 		path:       path,
 		expiration: max(expiration, 0),
-		static:     make(map[string]bool),
+		pinned:     make(map[string]bool),
 		stop:       make(chan struct{}),
 		diskFree:   diskFree,
 	}
@@ -130,11 +134,8 @@ func PermissionHint(path string) string {
 }
 
 func (s *FileStorage) Set(key string, value string, skip_expiration bool) error {
-	name := md5Hex(key)
 	if skip_expiration {
-		s.mu.Lock()
-		s.static[name] = true
-		s.mu.Unlock()
+		s.Keep(key, true)
 	}
 
 	// The same way as Create, so a failed write never leaves a partial paste.
@@ -377,20 +378,42 @@ func fileError(err error) error {
 	return err
 }
 
-func (s *FileStorage) isStatic(name string) bool {
+// Keep pins key so neither reads nor the janitor ever expire it, or lets it
+// expire again. Pins live in memory only and are set again at startup.
+func (s *FileStorage) Keep(key string, keep bool) {
+	name := md5Hex(key)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.static[name]
+	if keep {
+		s.pinned[name] = true
+	} else {
+		delete(s.pinned, name)
+	}
 }
 
-// expired reports whether a paste file is past its lifetime. Static documents never are.
+func (s *FileStorage) isPinned(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pinned[name]
+}
+
+// Delete removes the paste file of key and its pin. A missing file is not an error.
+func (s *FileStorage) Delete(key string) error {
+	s.Keep(key, false)
+	if err := os.Remove(filepath.Join(s.path, md5Hex(key))); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// expired reports whether a paste file is past its lifetime. Pinned pastes never are.
 func (s *FileStorage) expired(name string, info fs.FileInfo, now time.Time) bool {
-	return s.expiration > 0 && now.Sub(info.ModTime()) > s.expiration && !s.isStatic(name)
+	return s.expiration > 0 && now.Sub(info.ModTime()) > s.expiration && !s.isPinned(name)
 }
 
 // touch starts the lifetime of a paste again after a read
 func (s *FileStorage) touch(name, dst string) {
-	if s.expiration <= 0 || s.isStatic(name) {
+	if s.expiration <= 0 || s.isPinned(name) {
 		return
 	}
 	now := time.Now()
@@ -426,7 +449,7 @@ func (s *FileStorage) janitor(interval time.Duration) {
 }
 
 // sweep deletes the paste files that are past their lifetime and returns how
-// many it deleted. Only files named like a paste are touched, never static documents.
+// many it deleted. Only files named like a paste are touched, never pinned ones.
 func (s *FileStorage) sweep(now time.Time) int {
 	if s.expiration <= 0 {
 		return 0

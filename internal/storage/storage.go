@@ -59,3 +59,21 @@ type SpaceChecker interface {
 	// less free space than the configured floor
 	CheckSpace(size int64) error
 }
+
+// Deleter is implemented by backends that can delete a paste
+type Deleter interface {
+	// Delete removes the paste under key. A key that does not exist, or has
+	// expired already, is not an error: Delete returns nil, so a delete that
+	// is tried again after a failure or a race always ends the same way.
+	Delete(key string) error
+}
+
+// Keeper is implemented by backends that expire pastes on their own clock
+// and can keep chosen ones past it. Backends with a TTL per key do not need
+// it: a paste stored with skip_expiration never expires there.
+type Keeper interface {
+	// Keep pins key so it never expires (keep true), or lets it expire again
+	// (keep false). The key need not be stored yet; the pin lasts until the
+	// process ends, so pins must be set again at startup.
+	Keep(key string, keep bool)
+}

@@ -91,6 +91,8 @@ func TestPostgresStorage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "about", val)
 
+	requireDelete(t, store)
+
 	require.NoError(t, store.Close())
 }
 

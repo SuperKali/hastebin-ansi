@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
 	stdlog "log"
 	"net/http"
 	"net/http/httptest"
@@ -342,15 +343,16 @@ func TestMetricsServerBindFailure(t *testing.T) {
 	}
 }
 
-func TestMCPRoute(t *testing.T) {
-	mcpRequest := func() *http.Request {
-		body := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
-		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
-		return req
-	}
+// mcpRequest is an MCP tools/list request
+func mcpRequest() *http.Request {
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	return req
+}
 
+func TestMCPRoute(t *testing.T) {
 	for _, enabled := range []bool{true, false} {
 		cfg := &config.Config{Host: "127.0.0.1", Port: 0, KeyLength: 10, MaxLength: 1024, MCPEnable: enabled}
 		srv := NewServer(cfg, storage.NewFileStorage(t.TempDir(), 0), keygenerator.NewPhoneticKeyGenerator())
@@ -465,11 +467,84 @@ func TestRedactPath(t *testing.T) {
 	require.Equal(t, "/"+id+".log", redactPath("/abcdefghijklmnop.log"))
 	require.NotEqual(t, hash, redactPath("/raw/otherkey"))
 
+	// Dashboard and API routes hide the key and keep the rest of the path
+	require.Equal(t, "/api/v1/pastes/"+id, redactPath("/api/v1/pastes/abcdefghijklmnop"))
+	require.Equal(t, "/api/v1/pastes/"+id+"/revisions/2", redactPath("/api/v1/pastes/abcdefghijklmnop/revisions/2"))
+	require.Equal(t, "/api/v1/pastes/"+id+"/content", redactPath("/api/v1/pastes/abcdefghijklmnop/content"))
+	require.Equal(t, "/api/v1/admin/pastes/"+id+"/abuse", redactPath("/api/v1/admin/pastes/abcdefghijklmnop/abuse"))
+	require.Equal(t, "/dashboard/p/"+id, redactPath("/dashboard/p/abcdefghijklmnop"))
+	require.Equal(t, "/dashboard/p/"+id+".log", redactPath("/dashboard/p/abcdefghijklmnop.log"))
+	for _, path := range []string{"/api/v1/pastes/abcdefghijklmnop/versions", "/api/v1/admin/pastes/abcdefghijklmnop",
+		"/dashboard/p/abcdefghijklmnop/"} {
+		require.NotContains(t, redactPath(path), "abcdefghijklmnop", path)
+	}
+
 	// Routes and web page files are kept
 	for _, path := range []string{"/", "/documents", "/log", "/mcp", "/health", "/metrics", "/api/info",
-		"/application.js", "/favicon.ico", "/llms.txt", "/robots.txt", "/raw/", "/raw/a/b"} {
+		"/application.js", "/favicon.ico", "/llms.txt", "/robots.txt", "/raw/", "/raw/a/b",
+		"/api/v1/pastes", "/api/v1/pastes/", "/api/v1/pastes/delete", "/api/v1/admin/pastes/",
+		"/api/v1/session", "/api/v1/tokens/3", "/dashboard", "/admin", "/dashboard/p/"} {
 		require.Equal(t, path, redactPath(path))
 	}
+}
+
+func TestHeadWebPage(t *testing.T) {
+	cfg := &config.Config{Host: "127.0.0.1", Port: 0, KeyLength: 10, MaxLength: 1024}
+	srv := NewServer(cfg, storage.NewFileStorage(t.TempDir(), 0), keygenerator.NewPhoneticKeyGenerator())
+	srv.RegisterRoutes()
+
+	ts := httptest.NewServer(srv.mux)
+	t.Cleanup(ts.Close)
+
+	// The index, a paste page and a file of the web page answer HEAD like GET,
+	// without the body, which net/http drops
+	for _, path := range []string{"/", "/abcdefghij", "/abcdefghij.log", "/application.js", "/robots.txt"} {
+		get, err := http.Get(ts.URL + path)
+		require.NoError(t, err)
+		body, err := io.ReadAll(get.Body)
+		get.Body.Close()
+		require.NoError(t, err)
+		head, err := http.Head(ts.URL + path)
+		require.NoError(t, err)
+		head.Body.Close()
+
+		require.Equal(t, http.StatusOK, get.StatusCode, path)
+		require.Equal(t, http.StatusOK, head.StatusCode, path)
+		require.NotEmpty(t, body, path)
+		get.Header.Del("Date")
+		head.Header.Del("Date")
+		require.Equal(t, get.Header, head.Header, path)
+	}
+}
+
+func TestVersionAndNoStore(t *testing.T) {
+	cfg := &config.Config{Host: "127.0.0.1", Port: 0, KeyLength: 10, MaxLength: 1024, MCPEnable: true}
+	srv := NewServer(cfg, storage.NewFileStorage(t.TempDir(), 0), keygenerator.NewPhoneticKeyGenerator())
+	require.Equal(t, "dev", srv.Version)
+	srv.Version = "v1.2.3"
+	srv.RegisterRoutes()
+
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/info", nil))
+	var info struct {
+		Version string `json:"version"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&info))
+	require.Equal(t, "v1.2.3", info.Version)
+
+	// MCP answers carry paste content and are never cached
+	rec = httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, mcpRequest())
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "private, no-store", rec.Header().Get("Cache-Control"))
+
+	// Paste routes are never cached either; the web page keeps its caching
+	rec = httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/raw/abcdefghij.js", nil))
+	require.Equal(t, "private, no-store", rec.Header().Get("Cache-Control"))
+	rec = httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/application.js", nil))
+	require.Empty(t, rec.Header().Get("Cache-Control"))
 }
 
 func TestAccessLogRedactsKeys(t *testing.T) {

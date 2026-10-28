@@ -123,7 +123,10 @@ func isBucketAlreadyThere(err error) bool {
 	return false
 }
 
-var _ Storage = (*S3Storage)(nil)
+var (
+	_ Storage = (*S3Storage)(nil)
+	_ Deleter = (*S3Storage)(nil)
+)
 
 func (s *S3Storage) Set(key string, value string, skip_expiration bool) error {
 	ctx := context.Background() // TODO: Add timeout control
@@ -189,6 +192,21 @@ func isObjectNotFound(err error) bool {
 		}
 	}
 	return false
+}
+
+// Delete removes the object of key. S3 answers a delete of a missing object
+// with success; a store that says NotFound instead is not an error either.
+func (s *S3Storage) Delete(key string) error {
+	ctx := context.Background() // TODO: Add timeout control
+
+	_, err := s.svc.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: &s.bucket,
+		Key:    aws.String(key),
+	})
+	if isObjectNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 func (s *S3Storage) Close() error {

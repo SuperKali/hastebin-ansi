@@ -41,9 +41,11 @@ jobs:
             fi
             echo "default=$name:$REF_NAME" >> "$GITHUB_OUTPUT"
             echo "pterodactyl=$name:pterodactyl-$REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "version=$REF_NAME" >> "$GITHUB_OUTPUT"
           else
             echo "default=$name:latest" >> "$GITHUB_OUTPUT"
             echo "pterodactyl=$name:pterodactyl,$name:pterodactyl-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up QEMU
@@ -76,6 +78,7 @@ jobs:
           pull: true # avoid bitrot with repeated cache hits
           push: true
           tags: ${{ steps.image.outputs.default }}
+          build-args: VERSION=${{ steps.image.outputs.version }}
           labels: |
             org.opencontainers.image.title=ansi-hastebin
             org.opencontainers.image.description=${{ github.event.repository.description }}
@@ -97,6 +100,7 @@ jobs:
           pull: true
           push: true
           tags: ${{ steps.image.outputs.pterodactyl }}
+          build-args: VERSION=${{ steps.image.outputs.version }}
           labels: |
             org.opencontainers.image.title=ansi-hastebin
             org.opencontainers.image.description=${{ github.event.repository.description }}

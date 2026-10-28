@@ -38,4 +38,4 @@ jobs:
             ${{ runner.os }}-go-${{ matrix.go-version }}-
 
       - name: Build project
-        run: go build -v cmd/main.go
+        run: go build -v -ldflags "-X main.version=${GITHUB_SHA::7}" cmd/main.go

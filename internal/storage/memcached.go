@@ -28,7 +28,10 @@ func NewMemcachedStorage(host string, port int, expiration int) *MemcachedStorag
 	return &MemcachedStorage{client: client, expiration: expiration}
 }
 
-var _ Storage = (*MemcachedStorage)(nil)
+var (
+	_ Storage = (*MemcachedStorage)(nil)
+	_ Deleter = (*MemcachedStorage)(nil)
+)
 
 // maxRelativeExpiration is the largest TTL memcached treats as relative seconds;
 // larger values are read as a unix timestamp.
@@ -89,6 +92,14 @@ func (s *MemcachedStorage) Size(key string) (int64, error) {
 		return 0, err
 	}
 	return int64(len(item.Value)), nil
+}
+
+// Delete removes key. A missing key is not an error.
+func (s *MemcachedStorage) Delete(key string) error {
+	if err := s.client.Delete(key); err != nil && !errors.Is(err, memcache.ErrCacheMiss) {
+		return err
+	}
+	return nil
 }
 
 func (s *MemcachedStorage) Close() error {

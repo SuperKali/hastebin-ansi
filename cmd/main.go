@@ -25,6 +25,9 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// version is the build version, set with -ldflags "-X main.version=v1.2.3"
+var version = "dev"
+
 func handleConfig(location string) (*config.Config, storage.Storage, keygenerator.KeyGenerator) {
 	cfg := config.NewConfig(location)
 	exp := cfg.ExpirationDuration()
@@ -229,6 +232,7 @@ func main() {
 	flag.Parse()
 
 	srv := server.NewServer(handleConfig(configFile))
+	srv.Version = version
 	srv.RegisterRoutes()
 
 	// Start the server in a separate goroutine

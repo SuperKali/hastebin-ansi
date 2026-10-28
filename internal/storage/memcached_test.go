@@ -73,6 +73,8 @@ func TestMemcachedStorage(t *testing.T) {
 	require.ErrorIs(t, err, memcache.ErrCacheMiss) // Should not exist
 	require.ErrorIs(t, err, ErrNotFound)
 
+	requireDelete(t, store)
+
 	require.NoError(t, store.Close())
 }
 

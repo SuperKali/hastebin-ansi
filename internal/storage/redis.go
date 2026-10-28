@@ -34,7 +34,10 @@ func NewRedisStorage(host string, port int, username string, password string, ex
 	return &RedisStorage{client: client, expiration: expiration}
 }
 
-var _ Storage = (*RedisStorage)(nil)
+var (
+	_ Storage = (*RedisStorage)(nil)
+	_ Deleter = (*RedisStorage)(nil)
+)
 
 func (s *RedisStorage) Set(key string, value string, skip_expiration bool) error {
 	ctx := context.Background() // TODO: Add timeout control
@@ -86,6 +89,13 @@ func (s *RedisStorage) Size(key string) (int64, error) {
 		}
 	}
 	return n, nil
+}
+
+// Delete removes key. A missing key is not an error.
+func (s *RedisStorage) Delete(key string) error {
+	ctx := context.Background() // TODO: Add timeout control
+
+	return s.client.Del(ctx, key).Err()
 }
 
 func (s *RedisStorage) Close() error {

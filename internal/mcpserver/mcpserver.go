@@ -277,6 +277,8 @@ func NewHandler(docs *handler.DocumentHandler, opts Options) http.Handler {
 	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w = &noStoreWriter{ResponseWriter: w}
+
 		// A person who opens the endpoint in a browser gets a hint, not a bare 405
 		if r.Method == http.MethodGet && !strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 			w.Header().Set("Allow", "POST")
@@ -440,6 +442,34 @@ func (s *slowUploadWriter) WriteHeader(code int) {
 // Unwrap lets http.ResponseController reach the connection
 func (s *slowUploadWriter) Unwrap() http.ResponseWriter {
 	return s.ResponseWriter
+}
+
+// noStoreWriter marks every answer as one no cache may keep, as tool results
+// carry paste content. The SDK sets its own Cache-Control, which allows
+// storing; this one replaces it when the header is written.
+type noStoreWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (n *noStoreWriter) WriteHeader(code int) {
+	if !n.wrote {
+		n.wrote = true
+		n.Header().Set("Cache-Control", "private, no-store")
+	}
+	n.ResponseWriter.WriteHeader(code)
+}
+
+func (n *noStoreWriter) Write(p []byte) (int, error) {
+	if !n.wrote {
+		n.WriteHeader(http.StatusOK)
+	}
+	return n.ResponseWriter.Write(p)
+}
+
+// Unwrap lets http.ResponseController reach the connection
+func (n *noStoreWriter) Unwrap() http.ResponseWriter {
+	return n.ResponseWriter
 }
 
 // NewServer builds the MCP server with its tools. maxLength is the largest

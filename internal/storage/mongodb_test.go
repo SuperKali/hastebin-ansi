@@ -90,6 +90,8 @@ func TestMongoDBStorage(t *testing.T) {
 	require.ErrorIs(t, err, mongo.ErrNoDocuments)
 	require.ErrorIs(t, err, ErrNotFound)
 
+	requireDelete(t, store)
+
 	require.NoError(t, store.Close())
 }
 

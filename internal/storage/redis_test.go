@@ -100,6 +100,8 @@ func TestRedisStorage_SetAndGet(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, -1*time.Nanosecond, ttlAfterNormalGet)
 
+	requireDelete(t, storage)
+
 	require.NoError(t, storage.Close())
 }
 
