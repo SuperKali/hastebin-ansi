@@ -129,6 +129,8 @@ main.narrow {
     flex-wrap: wrap;
     align-items: center;
     gap: 8px 16px;
+    /* As tall as a button, so the title sits at the same height on every tab */
+    min-height: 34px;
     margin-bottom: 18px;
 }
 
@@ -198,10 +200,16 @@ main.narrow {
 
 /* Cards */
 
+/* Cards wrap and the last row stretches, so any count fills every row */
 .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    display: flex;
+    flex-wrap: wrap;
     gap: 16px;
+}
+
+.grid > * {
+    flex: 1 1 320px;
+    min-width: 0;
 }
 
 .card {
@@ -456,8 +464,30 @@ tr:last-child td {
         padding: 16px;
     }
 
-    .grid {
-        grid-template-columns: 1fr;
+    /* Narrow settings tables: each setting above its value */
+    #card-config thead {
+        display: none;
+    }
+
+    #card-config table,
+    #card-config tbody,
+    #card-config tr,
+    #card-config td {
+        display: block;
+    }
+
+    #card-config tr {
+        padding: 7px 12px;
+        border-bottom: 1px solid rgba(23, 75, 87, 0.6);
+    }
+
+    #card-config tr:last-child {
+        border-bottom: 0;
+    }
+
+    #card-config td {
+        padding: 0;
+        border: 0;
     }
 
     .hero {
@@ -714,7 +744,8 @@ input[type="radio"] {
 
 .filter-fields {
     display: flex;
-    flex-wrap: wrap;
+    /* One row next to the search: the fields shrink instead of wrapping */
+    flex-wrap: nowrap;
     gap: 10px 12px;
     justify-content: flex-end;
 }
@@ -854,6 +885,11 @@ table.pastes tbody tr.picked {
     padding-right: 4px !important;
 }
 
+/* A block box, so the cell centers the box and not its text baseline */
+.c-check input[type="checkbox"] {
+    display: block;
+}
+
 .c-title {
     min-width: 0;
     font-family: var(--sans) !important;
@@ -912,6 +948,7 @@ table.pastes tbody tr.picked {
 
 .vis {
     display: inline-flex;
+    white-space: nowrap;
     align-items: center;
     gap: 5px;
     padding: 1px 8px 1px 7px;
@@ -1062,14 +1099,16 @@ details.menu[open] > .icon-btn {
     filter: drop-shadow(0 6px 18px rgba(79, 193, 181, 0.3));
 }
 
-.empty-title {
+.empty-title,
+.empty .empty-title {
     margin: 12px 0 4px;
     color: #fff;
     font-size: 17px;
     font-weight: 600;
 }
 
-.empty-text {
+.empty-text,
+.empty .empty-text {
     max-width: 420px;
     margin: 0 auto;
     color: var(--muted);
@@ -1235,6 +1274,7 @@ table.pastes .btn {
 
 .choice legend {
     margin-bottom: 8px;
+    padding: 0;
     color: var(--muted);
 }
 
@@ -1280,6 +1320,19 @@ table.pastes .btn {
 
 .card p {
     margin: 0 0 10px;
+}
+
+.card p:last-child {
+    margin-bottom: 0;
+}
+
+.card p.hint {
+    margin-top: 10px;
+}
+
+.card .history:empty + .history-empty,
+.card table.tokens[hidden] + .tokens-empty {
+    margin-top: 0;
 }
 
 .danger-zone {
@@ -1571,6 +1624,13 @@ dialog.confirm p {
 
     .copyrow.block .copy {
         align-self: flex-end;
+    }
+
+    /* A button under a full width field spans it too, as in the admin forms */
+    .inline-form .btn,
+    .delete-account .btn {
+        flex: 1 1 100%;
+        justify-content: center;
     }
 }
 

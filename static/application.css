@@ -690,4 +690,13 @@ pre.mcp-snippet {
     .mcp-tabs [role="tab"] {
         padding: 7px 8px 6px;
     }
+
+    /* The buttons fill their rows, so a wrapped Cancel keeps the left edge */
+    .login-ended-actions button {
+        flex: 1 1 auto;
+    }
+
+    body.has-login-ended {
+        padding-bottom: 170px;
+    }
 }

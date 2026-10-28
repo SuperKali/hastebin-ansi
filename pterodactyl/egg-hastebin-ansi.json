@@ -401,7 +401,7 @@
         },
         {
             "name": "GitHub Client ID",
-            "description": "Client ID of the GitHub OAuth App for login (preview, see Accounts in the README). Empty keeps login off. Set the app's callback URL to the Base URL followed by /auth/github/callback. Login needs an https Base URL.",
+            "description": "Client ID of the GitHub OAuth App for login (see Accounts in the README). Empty keeps login off. Set the app's callback URL to the Base URL followed by /auth/github/callback. Login needs an https Base URL.",
             "env_variable": "GITHUB_CLIENT_ID",
             "default_value": "",
             "user_viewable": true,

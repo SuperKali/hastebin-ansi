@@ -103,12 +103,15 @@
     min-width: 0;
 }
 
+/* The pill is taller than a card title: the row moves up so this title
+   lines up with the Details title next to it */
 .editor-head {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 8px 12px;
+    margin-top: -5px;
 }
 
 .editor-head h2 {
@@ -490,13 +493,13 @@ input[type="datetime-local"]:focus {
         align-items: flex-start;
     }
 
+    /* Three buttons a row; a shorter last row stretches to fill */
     .detail-actions {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
         width: 100%;
     }
 
     .detail-actions .btn {
+        flex: 1 1 30%;
         justify-content: center;
         padding: 0 8px;
     }
