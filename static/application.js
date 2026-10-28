@@ -310,14 +310,22 @@ haste.prototype.hideLargeNotice = function () {
 };
 
 // draftKey is where the text waits in sessionStorage while the person
-// signs in again; the page it returns to puts it back
+// signs in again; the page it returns to puts it back, for the same
+// account only and for draftTTL milliseconds
 haste.draftKey = 'hastebin.draft';
+haste.draftTTL = 30 * 60 * 1000;
 
 // Tell the person that saving failed because their login ended, with the
 // two ways on: sign in again and come back to this text, or save it as an
-// anonymous public paste. Nothing is saved until they choose.
+// anonymous public paste. Nothing is saved until they choose, and every
+// later save in this page shows this again until they do.
 haste.prototype.showLoginEnded = function () {
     var _this = this;
+    // Whose login ended: the draft for "Sign in again" goes back to them only
+    if (this.session && this.session.user) {
+        this.endedUserID = this.session.user.id;
+    }
+    this.loginEnded = true;
     // The account control shows what the server thinks now
     this.loadSession();
     var $panel = $('#login-ended');
@@ -355,7 +363,12 @@ haste.prototype.signInAgain = function () {
     var back = window.location.pathname + window.location.search;
     var url = '/auth/github/login?return=' + encodeURIComponent(back);
     try {
-        window.sessionStorage.setItem(haste.draftKey, this.$textarea.val());
+        if (this.endedUserID === undefined) {
+            throw new Error('no account to keep the text for');
+        }
+        window.sessionStorage.setItem(haste.draftKey, JSON.stringify({
+            text: this.$textarea.val(), user: this.endedUserID, saved: Date.now()
+        }));
     } catch (e) {
         var _this = this;
         window.open(url, '_blank', 'noopener');
@@ -369,19 +382,36 @@ haste.prototype.signInAgain = function () {
     window.location.href = url;
 };
 
-// Put back the text saved by signInAgain, once, on a new document
+// Put back the text saved by signInAgain, once, on a new document: only
+// when the account now signed in is the one whose login ended, and only
+// within draftTTL. Any other draft is dropped unread.
 haste.prototype.restoreDraft = function () {
     var draft = null;
     try {
-        draft = window.sessionStorage.getItem(haste.draftKey);
-        window.sessionStorage.removeItem(haste.draftKey);
+        draft = JSON.parse(window.sessionStorage.getItem(haste.draftKey));
     } catch (e) {
+        draft = null;
+    }
+    try {
+        window.sessionStorage.removeItem(haste.draftKey);
+    } catch (e) { /* nothing kept */
+    }
+    if (!draft || typeof draft.text !== 'string' || typeof draft.user !== 'number' ||
+        typeof draft.saved !== 'number' || !(Date.now() - draft.saved < haste.draftTTL && Date.now() >= draft.saved)) {
         return;
     }
-    if (draft && this.doc && !this.doc.locked && $.trim(this.$textarea.val()) === '') {
-        this.$textarea.val(draft).focus();
-        this.showMessage('Your text is back. Press Save to keep it.');
-    }
+    var _this = this;
+    $.ajax('/api/v1/session', {
+        type: 'get', dataType: 'json', cache: false, success: function (session) {
+            if (!session || !session.user || session.user.id !== draft.user) {
+                return;
+            }
+            if (_this.doc && !_this.doc.locked && $.trim(_this.$textarea.val()) === '') {
+                _this.$textarea.val(draft.text).focus();
+                _this.showMessage('Your text is back. Press Save to keep it.');
+            }
+        }
+    });
 };
 
 // Load a document and show it
@@ -441,6 +471,15 @@ haste.prototype.duplicateDocument = function () {
 haste.prototype.lockDocument = function (anonymous) {
     console.log("LOCKING DOCUMENT");
     var _this = this;
+    // After a login ended here, no save goes out anonymous unasked: the
+    // person signs in again or picks the anonymous public paste
+    if (this.loginEnded && !anonymous) {
+        this.showLoginEnded();
+        return;
+    }
+    if (anonymous) {
+        this.loginEnded = false;
+    }
     this.hideLoginEnded();
     this.doc.save(this.$textarea.val(), function (err, ret) {
         if (err && err.loginEnded) {
@@ -604,6 +643,10 @@ haste.prototype.loadSession = function () {
         type: 'get', dataType: 'json', success: function (session) {
             _this.session = session && session.user ? session : null;
             haste_document.csrf = _this.session && session.csrf ? session.csrf : null;
+            // Signed in again: saves are owned again
+            if (haste_document.csrf) {
+                _this.loginEnded = false;
+            }
             _this.showAccount();
         }, error: function () {
             _this.session = null;

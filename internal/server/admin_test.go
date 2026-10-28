@@ -210,6 +210,38 @@ func TestAdminLookup(t *testing.T) {
 	require.Empty(t, auditRows(t, d.db))
 }
 
+// A paste its owner deleted, whose content still waits in the delete
+// queue, shows as pending deletion: no size, no visibility, no content
+func TestAdminLookupPendingDeletion(t *testing.T) {
+	d := adminDash(t, nil)
+	boss := loginAs(t, d.db, 42, "boss")
+	alice := loginAs(t, d.db, 11, "alice")
+	key := d.ownedUpload(alice, "soon gone")
+	deleted, _, err := d.db.DeletePastes(context.Background(), d.userID(11), []string{key})
+	require.NoError(t, err)
+	require.Equal(t, []string{key}, deleted)
+	require.True(t, d.stored(key), "the content waits in the queue")
+
+	for _, path := range []string{"/api/v1/admin/pastes/" + key, "/api/v1/admin/pastes?q=" + key} {
+		rec := d.api(http.MethodGet, path, boss, nil)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		out := decode[map[string]any](t, rec)
+		require.Equal(t, true, out["pending_deletion"], path)
+		require.Equal(t, false, out["exists"], path)
+		require.Equal(t, false, out["registered"], path)
+		require.Nil(t, out["size"], path)
+		require.Empty(t, out["visibility"], path)
+	}
+	rec := d.api(http.MethodPost, "/api/v1/admin/pastes/"+key+"/content", boss, map[string]string{"reason": "check"})
+	require.Equal(t, http.StatusNotFound, rec.Code)
+
+	// A live paste is not pending
+	live := d.ownedUpload(alice, "still here")
+	out := decode[map[string]any](t, d.api(http.MethodGet, "/api/v1/admin/pastes/"+live, boss, nil))
+	require.Equal(t, false, out["pending_deletion"])
+	require.Equal(t, true, out["exists"])
+}
+
 func TestAdminContentViewAuditedAndClosesEditWindow(t *testing.T) {
 	d := adminDash(t, nil)
 	boss := loginAs(t, d.db, 42, "boss")

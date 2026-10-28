@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/armbian/ansi-hastebin/config"
+	"github.com/armbian/ansi-hastebin/handler"
 	"github.com/armbian/ansi-hastebin/internal/accounts"
 	"github.com/armbian/ansi-hastebin/internal/auth"
 	"github.com/armbian/ansi-hastebin/internal/dashboard"
@@ -376,6 +377,98 @@ func TestOwnedUploadRateLimit(t *testing.T) {
 	bob := loginAs(t, d.db, 24, "bob")
 	bobToken, _ := d.newToken(bob, "ci")
 	rec = d.do(http.MethodPost, "/documents", strings.NewReader("bob"), nil, "Authorization", "Bearer "+bobToken)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// Any Authorization header whose scheme is Bearer is a token attempt,
+// whatever whitespace follows the scheme: a good token owns the paste, a
+// bad one is 401 and nothing is stored. Basic stays anonymous, as in v1.1.0.
+func TestBearerAnyWhitespace(t *testing.T) {
+	d := newDash(t, nil)
+	alice := loginAs(t, d.db, 27, "alice")
+	token, _ := d.newToken(alice, "ci")
+
+	for _, h := range []string{"Bearer\t" + token, "bearer \t" + token, "BEARER\t\t" + token + "\t"} {
+		rec, key := d.upload("mine", nil, "Authorization", h)
+		require.Equal(t, http.StatusOK, rec.Code, "%q: %s", h, rec.Body.String())
+		require.Equal(t, d.userID(27), d.owner(key), "%q", h)
+		require.Equal(t, userTools, d.mcpTools("Authorization", h), "%q", h)
+	}
+	files := d.files()
+	for _, h := range []string{"Bearer\thbp_nope", "Bearer\t", "bearer\t\tnot-a-token"} {
+		rec, _ := d.upload("leak", nil, "Authorization", h)
+		require.Equal(t, http.StatusUnauthorized, rec.Code, "%q", h)
+		require.Equal(t, http.StatusUnauthorized, d.mcpPost("tools/list", map[string]any{}, "Authorization", h).Code, "%q", h)
+	}
+	require.Equal(t, files, d.files(), "nothing stored")
+
+	rec, key := d.upload("anon", nil, "Authorization", "Basic dXNlcjpwYXNz")
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Zero(t, d.owner(key))
+}
+
+// Every path that creates an owned paste shares one budget per account:
+// HTTP uploads, MCP upload_log, duplicates, new versions and edits. Each
+// stays under its own request limit, and the mix is still held to 120 a minute.
+func TestOwnedPasteBudgetShared(t *testing.T) {
+	d := newDash(t, nil)
+	alice := loginAs(t, d.db, 25, "alice")
+	token, _ := d.newToken(alice, "ci")
+	auth := []string{"Authorization", "Bearer " + token}
+
+	created := 0
+	key := d.ownedUpload(alice, "first\n")
+	created++
+	for range 10 {
+		rec := d.api(http.MethodPost, "/api/v1/pastes/"+key+"/duplicate", alice, map[string]any{})
+		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		created++
+	}
+	for range 5 {
+		rec := d.raw(http.MethodPost, "/api/v1/pastes/"+key+"/versions", "next\n", alice)
+		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		created++
+	}
+	for range 4 {
+		rec := d.editContent(key, "edited\n", alice)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		created++
+	}
+	for range 60 {
+		a := d.mcpTool("upload_log", map[string]any{"content": "x"}, auth...)
+		require.False(t, a.isError, a.text)
+		created++
+	}
+	for created < handler.DefaultOwnedPasteLimit {
+		rec, _ := d.upload("x", nil, auth...)
+		require.Equal(t, http.StatusOK, rec.Code, created)
+		created++
+	}
+
+	// The budget is used up: every path refuses, and nothing is stored
+	files := d.files()
+	for _, path := range []string{"/log", "/documents"} {
+		rec := d.do(http.MethodPost, path, strings.NewReader("x"), nil, auth...)
+		require.Equal(t, http.StatusTooManyRequests, rec.Code, path)
+		require.NotEmpty(t, rec.Header().Get("Retry-After"), path)
+		require.Contains(t, rec.Body.String(), "too many pastes", path)
+	}
+	rec := d.api(http.MethodPost, "/api/v1/pastes/"+key+"/duplicate", alice, map[string]any{})
+	require.Equal(t, http.StatusTooManyRequests, rec.Code, rec.Body.String())
+	require.NotEmpty(t, rec.Header().Get("Retry-After"))
+	rec = d.raw(http.MethodPost, "/api/v1/pastes/"+key+"/versions", "next\n", alice)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code, rec.Body.String())
+	rec = d.editContent(key, "edited again\n", alice)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code, rec.Body.String())
+	a := d.mcpTool("upload_log", map[string]any{"content": "x"}, auth...)
+	require.True(t, a.isError)
+	require.Contains(t, a.text, "nothing was stored: retry in")
+	require.Equal(t, files, d.files(), "nothing stored")
+
+	// Other accounts and anonymous uploads are not held back
+	bob := loginAs(t, d.db, 26, "bob")
+	d.ownedUpload(bob, "bob")
+	rec, _ = d.upload("anon", nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 

@@ -233,11 +233,80 @@ func TestMCPUploadOwned(t *testing.T) {
 	require.False(t, a.isError, a.text)
 	require.Len(t, a.out["tags"], 10)
 
-	// Anonymous uploads ignore the account parameters and stay public and unowned
-	a = d.mcpTool("upload_log", map[string]any{"content": "anon", "visibility": "private", "tags": []string{"x"}})
+	// Anonymous uploads stay public and unowned
+	a = d.mcpTool("upload_log", map[string]any{"content": "anon"})
 	require.False(t, a.isError, a.text)
 	require.Zero(t, d.owner(a.out["key"].(string)))
 	require.Equal(t, http.StatusOK, d.do(http.MethodGet, "/raw/"+a.out["key"].(string), nil, nil).Code)
+}
+
+// Arguments the schema does not name are refused on both servers, and an
+// argument only an owned paste has, sent without a token, never falls back
+// to a public paste: nothing is stored
+func TestMCPStrictArguments(t *testing.T) {
+	d := newDash(t, nil)
+	alice := loginAs(t, d.db, 11, "alice")
+	token, _ := d.newToken(alice, "claude")
+	files := d.files()
+
+	for name, args := range map[string]map[string]any{
+		"visibility": {"content": "x", "visibility": "private"},
+		"title":      {"content": "x", "title": "t"},
+		"tags":       {"content": "x", "tags": []string{"a"}},
+		"expires_at": {"content": "x", "expires_at": "2099-01-02T03:04:05Z"},
+	} {
+		a := d.mcpTool("upload_log", args)
+		require.True(t, a.isError, name)
+		require.Contains(t, a.text, name+" needs a personal token", name)
+		require.Contains(t, a.text, "nothing was stored", name)
+		require.NotContains(t, a.text, "public to anyone", name)
+	}
+	a := d.mcpTool("upload_log", map[string]any{"content": "x", "visibility": "private", "title": "t"})
+	require.True(t, a.isError)
+	require.Contains(t, a.text, "title and visibility need a personal token")
+	for name, args := range map[string]map[string]any{
+		"unknown":    {"content": "x", "foo": 1},
+		"other case": {"Content": "x"},
+		"null":       {"content": "x", "visibility": nil},
+	} {
+		a := d.mcpTool("upload_log", args)
+		require.True(t, a.isError, name)
+		require.Contains(t, a.text, "nothing was stored", name)
+	}
+	require.Equal(t, files, d.files(), "nothing stored")
+
+	// The token server is just as strict
+	for name, call := range map[string]struct {
+		tool string
+		args map[string]any
+	}{
+		"upload":     {"upload_log", map[string]any{"content": "x", "visibilty": "private"}},
+		"upload key": {"upload_log", map[string]any{"content": "x", "Visibility": "private"}},
+		"list":       {"list_my_pastes", map[string]any{"pages": 2}},
+		"read":       {"read_paste", map[string]any{"key_or_url": "abc", "foo": 1}},
+		"search":     {"search_paste", map[string]any{"key_or_url": "abc", "pattern": "x", "foo": 1}},
+	} {
+		a := d.mcpTool(call.tool, call.args, bearer(token)...)
+		require.True(t, a.isError, name)
+	}
+	a = d.mcpTool("upload_log", map[string]any{"content": "x", "visibilty": "private"}, bearer(token)...)
+	require.Contains(t, a.text, `unknown argument "visibilty", so nothing was stored`)
+	require.Equal(t, files, d.files(), "nothing stored")
+
+	// Anonymous reads refuse unknown arguments too, as the SDK checks their schema
+	for _, tool := range []string{"read_paste", "search_paste"} {
+		a := d.mcpTool(tool, map[string]any{"key_or_url": "abc", "pattern": "x", "foo": 1})
+		require.True(t, a.isError, tool)
+	}
+
+	// Valid calls work as before on both servers
+	a = d.mcpTool("upload_log", map[string]any{"content": "anon", "extension": "log"})
+	require.False(t, a.isError, a.text)
+	require.Contains(t, a.text, "public to anyone with the link")
+	a = d.mcpTool("upload_log", map[string]any{"content": "mine", "visibility": "private", "title": "t"}, bearer(token)...)
+	require.False(t, a.isError, a.text)
+	a = d.mcpTool("list_my_pastes", map[string]any{"page": 1, "query": "", "tags": []string{}}, bearer(token)...)
+	require.False(t, a.isError, a.text)
 }
 
 func TestMCPUserLimits(t *testing.T) {

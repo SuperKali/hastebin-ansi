@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/armbian/ansi-hastebin/internal/accounts"
 	"github.com/rs/zerolog/log"
@@ -97,13 +98,25 @@ func TokenDisplay(token string) string {
 
 // bearerToken returns the token of an Authorization: Bearer header. present
 // is false when the request has no such header; other schemes are ignored.
+// The scheme matches in any case and ends at any whitespace, so "Bearer",
+// a tab and a token is a token attempt too. More than one Bearer header is
+// present with no token, which no token matches.
 func bearerToken(r *http.Request) (token string, present bool) {
-	header := r.Header.Get("Authorization")
-	scheme, value, _ := strings.Cut(strings.TrimSpace(header), " ")
-	if !strings.EqualFold(scheme, "Bearer") {
-		return "", false
+	for _, header := range r.Header.Values("Authorization") {
+		header = strings.TrimSpace(header)
+		end := strings.IndexFunc(header, unicode.IsSpace)
+		if end < 0 {
+			end = len(header)
+		}
+		if !strings.EqualFold(header[:end], "Bearer") {
+			continue
+		}
+		if present {
+			return "", true
+		}
+		token, present = strings.TrimSpace(header[end:]), true
 	}
-	return strings.TrimSpace(value), true
+	return token, present
 }
 
 // HasBearer reports whether a request carries an Authorization: Bearer header

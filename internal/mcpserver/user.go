@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -12,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/armbian/ansi-hastebin/handler"
+	"github.com/armbian/ansi-hastebin/internal/abuse"
 	"github.com/armbian/ansi-hastebin/internal/accounts"
 	"github.com/armbian/ansi-hastebin/internal/auth"
 	"github.com/armbian/ansi-hastebin/internal/dashboard"
@@ -269,10 +269,12 @@ func (s *service) userUpload(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		return toolError("this tool needs a personal token"), nil
 	}
 	var in UserUploadInput
-	if len(req.Params.Arguments) > 0 {
-		if err := json.Unmarshal(req.Params.Arguments, &in); err != nil {
-			return toolError("invalid arguments: %v", err), nil
-		}
+	unknown, err := decodeArgs(req.Params.Arguments, &in)
+	if err != nil {
+		return toolError("invalid arguments: %v", err), nil
+	}
+	if len(unknown) > 0 {
+		return argsError("upload_log", unknown, argNames[UserUploadInput](), true), nil
 	}
 
 	if strings.TrimSpace(in.Content) == "" {
@@ -327,6 +329,12 @@ func (s *service) userUpload(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	}
 
 	ip, _ := ctx.Value(clientIPKey{}).(string)
+	// One budget of new owned pastes for every path, HTTP and MCP
+	if left, ok := s.docs.OwnedPastes.Take(p.User.ID); !ok {
+		s.docs.Event(abuse.KindRateLimit, ip, "new pastes user "+strconv.FormatInt(p.User.ID, 10))
+		return toolError("your account created too many pastes in the last minute, so nothing was stored: retry in %d seconds",
+			handler.RetryAfterSeconds(left)), nil
+	}
 	if held, _ := ctx.Value(uploadSlotKey{}).(bool); !held {
 		release, ok := s.docs.AcquireUpload(ip, int64(len(in.Content)))
 		if !ok {
@@ -455,10 +463,12 @@ func (s *service) listMine(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		return toolError("this tool needs a personal token"), nil
 	}
 	var in ListInput
-	if len(req.Params.Arguments) > 0 {
-		if err := json.Unmarshal(req.Params.Arguments, &in); err != nil {
-			return toolError("invalid arguments: %v", err), nil
-		}
+	unknown, err := decodeArgs(req.Params.Arguments, &in)
+	if err != nil {
+		return toolError("invalid arguments: %v", err), nil
+	}
+	if len(unknown) > 0 {
+		return argsError("list_my_pastes", unknown, argNames[ListInput](), false), nil
 	}
 	query := strings.TrimSpace(in.Query)
 	if !utf8.ValidString(query) || utf8.RuneCountInString(query) > maxListQuery {

@@ -125,6 +125,10 @@ type DocumentHandler struct {
 	// instead of per client address. nil never refuses.
 	UserQuota *UploadQuota
 
+	// OwnedPastes caps the new owned pastes of each account per window, over
+	// every path that creates one. nil never refuses.
+	OwnedPastes *PasteBudget
+
 	// Uploaders tells who sends an upload to /documents and /log. nil means
 	// everyone is anonymous. It returns false when it refused the request and
 	// wrote the answer.

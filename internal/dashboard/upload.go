@@ -189,8 +189,9 @@ func (d *Handler) allowUpload(w http.ResponseWriter, r *http.Request, p *auth.Pr
 
 // ownedUploader is the Uploader of content p stores in their account: the
 // user's quota, pinned, at most what the account may still store. Over the
-// user's limits it answers and returns false; the paste count counts only
-// for a new paste. Commit is left to the caller.
+// user's limits, or the budget of new owned pastes, it answers and returns
+// false; the paste count counts only for a new paste. Every route that
+// creates owned content comes through here. Commit is left to the caller.
 func (d *Handler) ownedUploader(w http.ResponseWriter, r *http.Request, p *auth.Principal, newPaste bool) (handler.Uploader, bool) {
 	count, bytes, err := d.DB.Usage(r.Context(), p.User.ID)
 	if err != nil {
@@ -203,6 +204,9 @@ func (d *Handler) ownedUploader(w http.ResponseWriter, r *http.Request, p *auth.
 	}
 	if msg, status := d.overLimits(count, bytes); status != 0 {
 		writeMessage(w, status, msg)
+		return handler.Uploader{}, false
+	}
+	if !d.takeOwnedPaste(w, r, p) {
 		return handler.Uploader{}, false
 	}
 	maxLength := d.Limits.MaxLength
@@ -218,6 +222,26 @@ func (d *Handler) ownedUploader(w http.ResponseWriter, r *http.Request, p *auth.
 		Pin:       true,
 		MaxLength: maxLength,
 	}, true
+}
+
+// takeOwnedPaste counts one new owned paste of p against the budget every
+// path that creates one shares, see handler.PasteBudget. Over it, it
+// answers 429 with Retry-After and returns false.
+func (d *Handler) takeOwnedPaste(w http.ResponseWriter, r *http.Request, p *auth.Principal) bool {
+	if d.Docs == nil {
+		return true
+	}
+	left, ok := d.Docs.OwnedPastes.Take(p.User.ID)
+	if ok {
+		return true
+	}
+	id := strconv.FormatInt(p.User.ID, 10)
+	d.Events.Record(abuse.KindRateLimit, handler.ClientKey(handler.ClientIP(r)), "new pastes user "+id)
+	log.Info().Int64("user_id", p.User.ID).Msg("Owned paste refused, the account created too many pastes")
+	w.Header().Set("Retry-After", strconv.Itoa(handler.RetryAfterSeconds(left)))
+	WriteError(w, http.StatusTooManyRequests, "rate_limited",
+		fmt.Sprintf("Your account created too many pastes in the last minute. Try again in %d seconds.", handler.RetryAfterSeconds(left)))
+	return false
 }
 
 // overLimits returns the message and status that refuse an upload of a user

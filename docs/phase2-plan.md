@@ -52,13 +52,14 @@ audit_log(id PK, at, admin_user_id, admin_login, action, target, detail)  -- tri
 - OAuth state in memory (bounded 10k, TTL 10 min, single use) {pkce_verifier, return_to, reauth}, bound by cookie `__Host-hb_oauth` (HttpOnly, Secure, SameSite=Lax, Max-Age 600).
 - return_to: must start with `/`, not `//` or `/\`, no scheme or backslash, <= 512 bytes, else /dashboard. Stored server-side only.
 - Server-side sessions (no SESSION_KEY): cookie `__Host-hb_session` 32 random bytes, HttpOnly, Secure, Path=/, SameSite=Lax; DB stores sha256. Absolute 30 days, idle 7 days. New id at every login. Secure and redirect URI from BASE_URL, never from the request. With login configured, refuse to start if BASE_URL is empty or not https (except http://localhost, which drops `__Host-`).
-- CSRF on every cookie-authenticated state change: JSON body (or raw body on content routes) + header X-CSRF-Token == session token (constant time) + Origin, when present, == BASE_URL origin. Token from GET /api/v1/session. No CORS. On POST /documents the cookie counts only with a valid X-CSRF-Token. Without X-CSRF-Token the upload is anonymous as today. With an X-CSRF-Token that does not resolve (session gone, wrong token, cross-site) the upload is 401 session_expired and nothing is stored; the page keeps the text and offers "Sign in again" or "Save as anonymous public paste". Bearer requests exempt; if both present, Bearer wins.
-- Personal tokens: `hbp_` + base62(32 random bytes) + 6-char base62 CRC32. Shown once; stored sha256 + display prefix (hbp_ab12cd). Max 20 per user. last_used_at updated at most once a minute. Never in query strings. Present but invalid/revoked -> 401 with `WWW-Authenticate: Bearer realm="hastebin", error="invalid_token"`, never anonymous fallback.
+- CSRF on every cookie-authenticated state change: JSON body (or raw body on content routes) + header X-CSRF-Token == session token (constant time) + Origin, when present, == BASE_URL origin. Token from GET /api/v1/session. No CORS. On POST /documents the cookie counts only with a valid X-CSRF-Token. Without X-CSRF-Token the upload is anonymous as today. With an X-CSRF-Token that does not resolve (session gone, wrong token, cross-site) the upload is 401 session_expired and nothing is stored; the page keeps the text and offers "Sign in again" or "Save as anonymous public paste". Every later save in that page shows the same choice until the person picks one or signs in again. The draft for "Sign in again" carries the user id and the time: it comes back only to the same account, within 30 minutes. Bearer requests exempt; if both present, Bearer wins.
+- Personal tokens: `hbp_` + base62(32 random bytes) + 6-char base62 CRC32. Shown once; stored sha256 + display prefix (hbp_ab12cd). Max 20 per user. last_used_at updated at most once a minute. Never in query strings. Any Authorization header whose scheme is Bearer (any case, any whitespace after it) is a token attempt; two Bearer headers are invalid. Present but invalid/revoked -> 401 with `WWW-Authenticate: Bearer realm="hastebin", error="invalid_token"`, never anonymous fallback.
 - Per-user limits (httprate.LimitBy on u:<id>) on top of per-IP: API reads 120/min, writes 30/min, token creation 10/h, account deletion 3/day; login start 20 per 10 min per IP.
 - POST /api/v1/session/logout; logout-all deletes all sessions, optionally revokes all tokens.
 - Account deletion: type login to confirm; sessions and tokens go first, then paste rows in chunks of 250, each chunk one short transaction that queues its store keys (pastes, revisions, versions); the user row and audit row last. 202.
 - A key whose content waits in delete_queue reads as missing for everyone (gate), so a deleted private paste is never served as anonymous while the drainer catches up.
 - Owned uploads to /documents and /log: 120 a minute per account (u:<id>), 429 with Retry-After, as on /mcp.
+- One budget of new owned pastes per account, 120 a minute (sliding window, handler.PasteBudget on the shared DocumentHandler), on top of the per route limits: /documents and /log, MCP upload_log, duplicate, new version and edit (it keeps a revision) all take from it. 429 with Retry-After, or a tool error with the wait on MCP.
 - User ids come from AUTOINCREMENT (migration 0003), never reused.
 - Costly reads (dashboard list and search, tags, export, admin lists) run on their own pool of 2 connections with a 3 s timeout, so the gate and auth reads always have a connection; every list sort has an index (migration 0004).
 - Admin always on: ADMIN_GITHUB_IDS numeric ids, checked per request from config.
@@ -126,6 +127,7 @@ DELETE /api/v1/account                      {confirm:"<login>"}                 
 ## 6. MCP
 - NewHandler resolves Authorization: Bearer via auth.TokenVerifier before the SDK; principal in context; bad token -> HTTP 401 + WWW-Authenticate.
 - Server func picks anonServer (unchanged, golden test) or userServer (built once): upload_log with optional title, visibility, expires_at (owned, user quota); read_paste/search_paste with private access; list_my_pastes(query?, page?) 20 per page, metadata only; instructions name the owner and default visibility.
+- Tools that decode their own arguments (upload_log, list_my_pastes) refuse names their schema does not list, as the SDK does for the typed ones. Anonymous upload_log with title, visibility, tags or expires_at is a tool error that says it needs a token; nothing is stored.
 - No delete/edit tools this phase (prompt-injection risk). Later delete_paste behind an explicit token scope.
 - Later OAuth: /mcp stays anonymous with optional Bearer; reserve /mcp/u (auth-required, will serve /.well-known/oauth-protected-resource); api_tokens.kind/client_id/expires_at ready.
 
@@ -200,7 +202,8 @@ Chromium: zero CSP violations on /, /dashboard, /admin; login and return; owned 
 GET  /status                         version, uptime, storage type, disk free vs min_free_disk, file paste count/bytes (cached
                                      scan, at most every 10 min, "as of"), registered count/bytes, read/upload budget, slots,
                                      inflight clients, MCP in-use + counters, effective config (secrets "set"/"unset")
-GET  /pastes/{key|url}               metadata: exists, size, mtime, owner|anonymous, visibility, expiry, tombstone
+GET  /pastes/{key|url}               metadata: exists, size, mtime, owner|anonymous, visibility, expiry, tombstone,
+                                     pending_deletion (owner deleted it, content still queued: no size, no content)
 POST /pastes/{key}/content           {reason}: first 256 KiB; reason required; audited; closes the edit window
 DELETE /pastes/{key}                 {reason}      POST /pastes/{key}/abuse {reason}: delete + tombstone (410) + owner strike
 GET  /users?q=&sort=created|last_seen|bytes|pastes&page=     GET /users/{id} (+ paste metadata paged, no content)

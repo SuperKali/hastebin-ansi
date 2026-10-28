@@ -82,6 +82,11 @@ func TestBearer(t *testing.T) {
 	p, err = bearer("bearer  "+tok+" ", "")
 	require.NoError(t, err, "the scheme is case insensitive")
 	require.NotNil(t, p)
+	for _, h := range []string{"Bearer\t" + tok, "BEARER\t \t" + tok, "bEaReR\u00a0" + tok} {
+		p, err = bearer(h, "")
+		require.NoError(t, err, "any whitespace ends the scheme: %q", h)
+		require.NotNil(t, p, h)
+	}
 
 	// No header, or another scheme: no principal, no error
 	p, err = bearer("", "")
@@ -99,10 +104,25 @@ func TestBearer(t *testing.T) {
 	}
 
 	// Malformed, unknown, empty: invalid
-	for _, h := range []string{"Bearer", "Bearer ", "Bearer x", "Bearer " + NewToken(), "Bearer " + tok[:len(tok)-1] + "0"} {
+	for _, h := range []string{"Bearer", "Bearer ", "Bearer x", "Bearer " + NewToken(), "Bearer " + tok[:len(tok)-1] + "0",
+		"Bearer\tx", "bearer\t\t" + NewToken()} {
 		_, err = bearer(h, "")
 		require.ErrorIs(t, err, ErrInvalidToken, h)
 	}
+
+	// Two Bearer headers are no token, even when one is good; a Bearer
+	// header next to another scheme counts
+	r := httptest.NewRequest("POST", "/log", nil)
+	r.Header.Add("Authorization", "Bearer "+tok)
+	r.Header.Add("Authorization", "Bearer "+NewToken())
+	_, err = svc.Bearer(r)
+	require.ErrorIs(t, err, ErrInvalidToken)
+	r = httptest.NewRequest("POST", "/log", nil)
+	r.Header.Add("Authorization", "Basic dXNlcjpwYXNz")
+	r.Header.Add("Authorization", "Bearer\t"+tok)
+	p, err = svc.Bearer(r)
+	require.NoError(t, err)
+	require.NotNil(t, p)
 
 	// The checksum is checked before any lookup: with the database closed a
 	// malformed token is still just invalid, while a well formed one fails on the lookup
@@ -111,7 +131,7 @@ func TestBearer(t *testing.T) {
 	closed, err := New(db2, Config{SessionTTL: time.Hour, SessionIdle: time.Hour})
 	require.NoError(t, err)
 	db2.Close()
-	r := httptest.NewRequest("POST", "/log", nil)
+	r = httptest.NewRequest("POST", "/log", nil)
 	r.Header.Set("Authorization", "Bearer "+tok[:len(tok)-1]+"0")
 	_, err = closed.Bearer(r)
 	require.ErrorIs(t, err, ErrInvalidToken)

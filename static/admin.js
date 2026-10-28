@@ -369,7 +369,9 @@ $(function () {
         if (p.registered) {
             $chips.append(visibilityChip(p.visibility));
         }
-        if (p.tombstone) {
+        if (p.pending_deletion) {
+            $chips.append(chip('pending deletion', 'warn'));
+        } else if (p.tombstone) {
             $chips.append(chip('removed for abuse', 'bad'));
         } else if (!p.exists) {
             $chips.append(chip('content gone', 'warn'));
@@ -402,7 +404,7 @@ $(function () {
             }
             row($dl, 'Owner', $owner);
         } else {
-            row($dl, 'Owner', 'anonymous', p.registered ? null : 'no account; only the content is stored');
+            row($dl, 'Owner', p.pending_deletion ? '-' : 'anonymous', p.registered || p.pending_deletion ? null : 'no account; only the content is stored');
         }
         row($dl, 'Size', p.exists ? bytes(p.size) : '-');
         if (p.registered) {
@@ -421,7 +423,9 @@ $(function () {
         $card.find('.delete-paste').prop('disabled', !removable);
         $card.find('.abuse-paste').prop('disabled', !removable);
         var hint = '';
-        if (!removable) {
+        if (p.pending_deletion) {
+            hint = 'The owner deleted this paste. Its content waits in the delete queue, is removed soon and is not shown to anyone.';
+        } else if (!removable) {
             hint = p.tombstone ? 'This paste was removed already. Its key answers "removed by a moderator".' : 'Nothing is stored under this key now.';
         } else if (p.registered && !p.seen_at) {
             hint = 'Showing the content counts as a read by someone else: it ends the owner\'s editing under the same link.';

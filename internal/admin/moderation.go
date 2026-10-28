@@ -112,7 +112,8 @@ type TombstoneItem struct {
 type Lookup struct {
 	Key string `json:"key"`
 
-	// Exists is set when the store has content under the key
+	// Exists is set when the store has content under the key that a read
+	// may reach: never for a paste pending deletion
 	Exists     bool       `json:"exists"`
 	Size       *int64     `json:"size"`
 	ModifiedAt *time.Time `json:"modified_at"`
@@ -131,6 +132,11 @@ type Lookup struct {
 	Version    int        `json:"version"`
 
 	Tombstone *TombstoneItem `json:"tombstone"`
+
+	// PendingDeletion is set when the owner deleted the paste and its
+	// content waits in the delete queue: every read answers 404, and
+	// exists, size and visibility are left empty
+	PendingDeletion bool `json:"pending_deletion"`
 }
 
 // lookupKey gathers what is known about key. It returns nil when nothing
@@ -183,7 +189,18 @@ func (h *Handler) lookupKey(r *http.Request, key string) (*Lookup, error) {
 	case !errors.Is(err, accounts.ErrNotFound):
 		return nil, err
 	}
-	if !out.Exists && !out.Registered && out.Tombstone == nil {
+
+	// Deleted by its owner: the content left in the store until the queue
+	// drains is no paste anyone may read
+	a, err := h.DB.AccessOf(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if a.Pending {
+		out.PendingDeletion = true
+		out.Exists, out.Size, out.ModifiedAt, out.Visibility = false, nil, nil, ""
+	}
+	if !out.Exists && !out.Registered && out.Tombstone == nil && !out.PendingDeletion {
 		return nil, nil
 	}
 	return out, nil

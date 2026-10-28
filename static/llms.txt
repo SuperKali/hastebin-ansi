@@ -34,6 +34,7 @@ A registered user can send their API token (from <origin>/dashboard, Tokens tab)
 - Cursor and most clients: {"mcpServers": {"hastebin": {"url": "<origin>/mcp", "headers": {"Authorization": "Bearer hbp_..."}}}}
 - VS Code: {"servers": {"hastebin": {"type": "http", "url": "<origin>/mcp", "headers": {"Authorization": "Bearer hbp_..."}}}}
 - claude.ai and Claude Desktop custom connectors cannot send the header: they stay anonymous.
+- Without the token, upload_log takes only content and extension. title, visibility, tags or expires_at give a tool error and nothing is stored. Every tool refuses arguments it does not list.
 
 With the token:
 

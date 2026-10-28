@@ -706,10 +706,13 @@ func publicURLHint(docs *handler.DocumentHandler) string {
 func (s *service) upload(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	s.uploadCalls.Add(1)
 	var in UploadInput
-	if len(req.Params.Arguments) > 0 {
-		if err := json.Unmarshal(req.Params.Arguments, &in); err != nil {
-			return toolError("invalid arguments: %v", err), nil
-		}
+	unknown, err := decodeArgs(req.Params.Arguments, &in)
+	if err != nil {
+		return toolError("invalid arguments: %v", err), nil
+	}
+	if len(unknown) > 0 {
+		// An owner only argument without a token never becomes a public paste
+		return anonymousArgsError(unknown), nil
 	}
 
 	if strings.TrimSpace(in.Content) == "" {

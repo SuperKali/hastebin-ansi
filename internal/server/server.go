@@ -271,6 +271,7 @@ func (s *Server) RegisterRoutes() {
 		s.pinRegistered()
 		s.drainer = accounts.NewDrainer(s.Accounts, s.deleteStored)
 		documentHandler.UserQuota = handler.NewUploadQuota(int64(s.config.RegisteredUploadQuota), handler.DefaultQuotaWindow)
+		documentHandler.OwnedPastes = handler.NewPasteBudget(handler.DefaultOwnedPasteLimit, handler.OwnedPasteWindow)
 		dash := dashboard.New(s.auth, s.Accounts, dashboard.Limits{
 			MaxPastes:   int64(s.config.UserMaxPastes),
 			MaxBytes:    s.config.UserStorageLimit,
