@@ -407,6 +407,43 @@ func TestBearerAnyWhitespace(t *testing.T) {
 	require.Zero(t, d.owner(key))
 }
 
+// More than one Authorization header is a bad token on every path that reads
+// one, whichever comes first: 401 and nothing stored, never anonymous and
+// never the good token picked out of them
+func TestMultipleAuthorizationHeaders(t *testing.T) {
+	d := newDash(t, nil)
+	alice := loginAs(t, d.db, 28, "alice")
+	token, _ := d.newToken(alice, "ci")
+	files := d.files()
+
+	send := func(method, path, body string, values []string, headers ...string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.RemoteAddr = "198.51.100.7:4444"
+		req.AddCookie(alice)
+		for i := 0; i+1 < len(headers); i += 2 {
+			req.Header.Set(headers[i], headers[i+1])
+		}
+		req.Header["Authorization"] = values
+		rec := httptest.NewRecorder()
+		d.srv.mux.ServeHTTP(rec, req)
+		return rec
+	}
+	for _, values := range [][]string{
+		{"Basic dXNlcjpwYXNz", "Bearer " + token},
+		{"", "Bearer " + token},
+		{"Bearer " + token, "Basic dXNlcjpwYXNz"},
+	} {
+		require.Equal(t, http.StatusUnauthorized, send(http.MethodPut, "/log", "x", values).Code, "%q", values)
+		require.Equal(t, http.StatusUnauthorized, send(http.MethodPost, "/documents", "x", values).Code, "%q", values)
+		rpc := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+		require.Equal(t, http.StatusUnauthorized, send(http.MethodPost, "/mcp", rpc, values,
+			"Content-Type", "application/json", "Accept", "application/json, text/event-stream",
+			"Mcp-Protocol-Version", "2025-06-18").Code, "%q", values)
+		require.Equal(t, http.StatusUnauthorized, send(http.MethodGet, "/api/v1/pastes", "", values).Code, "%q", values)
+	}
+	require.Equal(t, files, d.files(), "nothing stored")
+}
+
 // Every path that creates an owned paste shares one budget per account:
 // HTTP uploads, MCP upload_log, duplicates, new versions and edits. Each
 // stays under its own request limit, and the mix is still held to 120 a minute.
@@ -470,6 +507,52 @@ func TestOwnedPasteBudgetShared(t *testing.T) {
 	d.ownedUpload(bob, "bob")
 	rec, _ = d.upload("anon", nil)
 	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// An upload that stores nothing gives its place in the shared budget back:
+// a full budget of failed uploads (empty, too large) leaves room for real
+// pastes on every path, while stored pastes still count
+func TestOwnedPasteBudgetFailedUploads(t *testing.T) {
+	d := newDash(t, func(c *config.Config) { c.RegisteredMaxLength = 64 })
+	alice := loginAs(t, d.db, 29, "alice")
+	token, _ := d.newToken(alice, "ci")
+	auth := []string{"Authorization", "Bearer " + token}
+
+	a := d.mcpTool("upload_log", map[string]any{"content": "first"}, auth...)
+	require.False(t, a.isError, a.text)
+	key := a.out["key"].(string)
+	files := d.files()
+	for i := range handler.DefaultOwnedPasteLimit {
+		path, body := "/log", ""
+		if i%2 == 1 {
+			path, body = "/documents", strings.Repeat("x", 65)
+		}
+		method := http.MethodPut
+		if path == "/documents" {
+			method = http.MethodPost
+		}
+		rec := d.do(method, path, strings.NewReader(body), nil, auth...)
+		require.Contains(t, []int{http.StatusBadRequest, http.StatusRequestEntityTooLarge}, rec.Code, "%d: %s", i, rec.Body.String())
+	}
+	require.Equal(t, files, d.files(), "nothing stored")
+
+	// The budget is untouched: MCP, a duplicate and a new version all store
+	a = d.mcpTool("upload_log", map[string]any{"content": "second"}, auth...)
+	require.False(t, a.isError, a.text)
+	rec := d.api(http.MethodPost, "/api/v1/pastes/"+key+"/duplicate", alice, map[string]any{})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	rec = d.raw(http.MethodPost, "/api/v1/pastes/"+key+"/versions", "next\n", alice)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+
+	// Stored pastes keep their place: 4 so far, the rest of the budget fills
+	// and the next one is refused
+	for created := 4; created < handler.DefaultOwnedPasteLimit; created++ {
+		a = d.mcpTool("upload_log", map[string]any{"content": "x"}, auth...)
+		require.False(t, a.isError, "%d: %s", created, a.text)
+	}
+	a = d.mcpTool("upload_log", map[string]any{"content": "x"}, auth...)
+	require.True(t, a.isError)
+	require.Contains(t, a.text, "nothing was stored: retry in")
 }
 
 // revokeAtEOF is an upload body that runs a function when it is read to the end

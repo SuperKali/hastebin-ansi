@@ -15,6 +15,48 @@ type skipValue struct{}
 
 func (*skipValue) UnmarshalJSON([]byte) error { return nil }
 
+// nullMark notes whether a JSON value is null and keeps nothing of it
+type nullMark bool
+
+func (n *nullMark) UnmarshalJSON(b []byte) error {
+	*n = string(b) == "null"
+	return nil
+}
+
+// nullArgs returns the names among names that raw sets to null, sorted.
+// Decoding leaves such an argument as if it were left out, which the
+// schema, where each is a string or an array, does not allow.
+func nullArgs(raw json.RawMessage, names []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var fields map[string]nullMark
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	var null []string
+	for _, name := range names {
+		if fields[name] {
+			null = append(null, name)
+		}
+	}
+	slices.Sort(null)
+	return null, nil
+}
+
+// nullArgsError is the tool error for arguments set to null
+func nullArgsError(null []string) *mcp.CallToolResult {
+	quoted := make([]string, len(null))
+	for i, name := range null {
+		quoted[i] = `"` + name + `"`
+	}
+	verb, pronoun := "is", "it"
+	if len(null) > 1 {
+		verb, pronoun = "are", "them"
+	}
+	return toolError("%s %s null, so nothing was stored: give a value, or leave %s out for the default", joinWords(quoted), verb, pronoun)
+}
+
 // argNames returns the JSON names of the fields of T, in field order: the
 // properties of the schema the SDK builds from T
 func argNames[T any]() []string {

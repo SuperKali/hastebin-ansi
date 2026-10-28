@@ -168,6 +168,7 @@ func (d *Handler) handleEditContent(w http.ResponseWriter, r *http.Request) {
 	defer d.Docs.DeleteStored(stage)
 	size, err := d.Docs.Store.Size(stage)
 	if err != nil {
+		u.Refund()
 		writeStoreError(w, err)
 		return
 	}
@@ -185,6 +186,7 @@ func (d *Handler) applyEdit(w http.ResponseWriter, r *http.Request, p *auth.Prin
 	defer func() {
 		if !kept {
 			d.Docs.RefundQuota(u, size)
+			u.Refund()
 		}
 	}()
 
@@ -350,6 +352,12 @@ func (d *Handler) handleDuplicate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	created := false
+	defer func() {
+		if !created {
+			u.Refund()
+		}
+	}()
 	if u.MaxLength > 0 && src.Size > int64(u.MaxLength) {
 		WriteError(w, http.StatusRequestEntityTooLarge, "too_large", "This paste does not fit in what your account may still store.")
 		return
@@ -379,6 +387,7 @@ func (d *Handler) handleDuplicate(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, "internal", "Something went wrong, try again.")
 		return
 	}
+	created = true
 	log.Info().Int64("user_id", p.User.ID).Int64("size", size).Msg("Paste duplicated by its owner")
 	d.writeCreated(w, r, key)
 }

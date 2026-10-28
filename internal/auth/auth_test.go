@@ -615,6 +615,27 @@ func TestAdminNotFoundForOthers(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, res.StatusCode)
 }
 
+// Every Authorization header counts at /admin, not only the first: an
+// empty one before a Bearer, as curl -H 'Authorization;' sends it, or an
+// empty one alone is 404 next to an admin cookie too
+func TestAdminNotFoundWithAnyAuthorizationHeader(t *testing.T) {
+	h := newHarness(t)
+	admin := h.browser()
+	h.gh.setUser(githubAccount{ID: adminGitHubID, Login: "boss", CreatedAt: time.Now().Add(-1000 * time.Hour)})
+	h.login(admin, "")
+	require.Equal(t, http.StatusOK, h.get(admin, h.srv.URL+"/admin").StatusCode)
+
+	for _, values := range [][]string{{"", "Bearer hbp_whatever"}, {""}, {"Basic Ym9zczpwdw==", ""}} {
+		req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/admin", nil)
+		require.NoError(t, err)
+		req.Header["Authorization"] = values
+		res, err := admin.Do(req)
+		require.NoError(t, err)
+		res.Body.Close()
+		require.Equal(t, http.StatusNotFound, res.StatusCode, "%q", values)
+	}
+}
+
 func TestSessionExpiry(t *testing.T) {
 	h := newHarness(t)
 	c := h.browser()

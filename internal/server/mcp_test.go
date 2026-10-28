@@ -309,6 +309,35 @@ func TestMCPStrictArguments(t *testing.T) {
 	require.False(t, a.isError, a.text)
 }
 
+// The token upload_log refuses null for the arguments only an owned paste
+// has, as its schema types them string or array: never the default in
+// silence. content and extension take null as on the anonymous server.
+func TestMCPUserNullArguments(t *testing.T) {
+	d := newDash(t, nil)
+	alice := loginAs(t, d.db, 12, "alice")
+	token, _ := d.newToken(alice, "claude")
+	files := d.files()
+
+	for _, name := range []string{"visibility", "title", "tags", "expires_at"} {
+		a := d.mcpTool("upload_log", map[string]any{"content": "x", name: nil}, bearer(token)...)
+		require.True(t, a.isError, name)
+		require.Contains(t, a.text, `"`+name+`" is null, so nothing was stored`, name)
+	}
+	a := d.mcpTool("upload_log", map[string]any{"content": "x", "title": nil, "visibility": nil}, bearer(token)...)
+	require.True(t, a.isError)
+	require.Contains(t, a.text, `"title" and "visibility" are null`)
+	require.Equal(t, files, d.files(), "nothing stored")
+
+	// Strings that only look like null are just values
+	a = d.mcpTool("upload_log", map[string]any{"content": "x", "title": "null", "extension": nil}, bearer(token)...)
+	require.False(t, a.isError, a.text)
+	require.Equal(t, "null", a.out["title"])
+
+	// The anonymous upload_log is unchanged: extension null is no extension
+	a = d.mcpTool("upload_log", map[string]any{"content": "anon", "extension": nil})
+	require.False(t, a.isError, a.text)
+}
+
 func TestMCPUserLimits(t *testing.T) {
 	d := newDash(t, func(cfg *config.Config) {
 		cfg.RegisteredUploadQuota = 100

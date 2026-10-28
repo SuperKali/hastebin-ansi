@@ -323,6 +323,12 @@ type Uploader struct {
 	// upload fails: an *UploadRefused is answered as it says, anything else
 	// with 500. Owned uploads record their row here.
 	Commit func(key string, size int64) error
+
+	// Refund, when set, gives back what the caller counted for this upload
+	// before the body arrived, such as its place in the PasteBudget.
+	// ReceiveInto runs it when it stores nothing; it must be safe to run
+	// more than once.
+	Refund func()
 }
 
 // UploadRefused is an upload refused for a reason the caller chose: the
@@ -961,8 +967,17 @@ func (h *DocumentHandler) HandlePutLog(w http.ResponseWriter, r *http.Request) {
 // replaced only once the new one is stored whole. Every upload limit applies:
 // the quota, max length, free space floor, upload slots, slow upload guard and
 // memory budget. Then u.Commit runs, when set, for a paste under a new key.
-// It returns the key; on failure it writes the error response and returns false.
+// It returns the key; on failure it writes the error response, runs
+// u.Refund and returns false.
 func (h *DocumentHandler) ReceiveInto(w http.ResponseWriter, r *http.Request, u Uploader, key string) (string, bool) {
+	stored := false
+	if u.Refund != nil {
+		defer func() {
+			if !stored {
+				u.Refund()
+			}
+		}()
+	}
 	ip := u.IP
 	if left, over := h.quota(u).Exceeded(u.quotaKey()); over {
 		h.Event(abuse.KindQuota, ip, u.QuotaKey)
@@ -1013,6 +1028,7 @@ func (h *DocumentHandler) ReceiveInto(w http.ResponseWriter, r *http.Request, u 
 		}
 	}
 	if err == nil {
+		stored = true
 		return key, true
 	}
 

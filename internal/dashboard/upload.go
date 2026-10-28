@@ -192,6 +192,9 @@ func (d *Handler) allowUpload(w http.ResponseWriter, r *http.Request, p *auth.Pr
 // user's limits, or the budget of new owned pastes, it answers and returns
 // false; the paste count counts only for a new paste. Every route that
 // creates owned content comes through here. Commit is left to the caller.
+// The place it takes in the budget is given back by u.Refund, which
+// ReceiveInto runs when it stores nothing; a route that can fail after
+// ReceiveInto, or without it, runs u.Refund itself then.
 func (d *Handler) ownedUploader(w http.ResponseWriter, r *http.Request, p *auth.Principal, newPaste bool) (handler.Uploader, bool) {
 	count, bytes, err := d.DB.Usage(r.Context(), p.User.ID)
 	if err != nil {
@@ -206,7 +209,8 @@ func (d *Handler) ownedUploader(w http.ResponseWriter, r *http.Request, p *auth.
 		writeMessage(w, status, msg)
 		return handler.Uploader{}, false
 	}
-	if !d.takeOwnedPaste(w, r, p) {
+	refund, ok := d.takeOwnedPaste(w, r, p)
+	if !ok {
 		return handler.Uploader{}, false
 	}
 	maxLength := d.Limits.MaxLength
@@ -221,19 +225,21 @@ func (d *Handler) ownedUploader(w http.ResponseWriter, r *http.Request, p *auth.
 		Owner:     p.User.ID,
 		Pin:       true,
 		MaxLength: maxLength,
+		Refund:    refund,
 	}, true
 }
 
 // takeOwnedPaste counts one new owned paste of p against the budget every
-// path that creates one shares, see handler.PasteBudget. Over it, it
-// answers 429 with Retry-After and returns false.
-func (d *Handler) takeOwnedPaste(w http.ResponseWriter, r *http.Request, p *auth.Principal) bool {
+// path that creates one shares, see handler.PasteBudget, and returns the
+// refund that gives it back when nothing is stored. Over it, it answers
+// 429 with Retry-After and returns false.
+func (d *Handler) takeOwnedPaste(w http.ResponseWriter, r *http.Request, p *auth.Principal) (func(), bool) {
 	if d.Docs == nil {
-		return true
+		return func() {}, true
 	}
-	left, ok := d.Docs.OwnedPastes.Take(p.User.ID)
+	refund, left, ok := d.Docs.OwnedPastes.Take(p.User.ID)
 	if ok {
-		return true
+		return refund, true
 	}
 	id := strconv.FormatInt(p.User.ID, 10)
 	d.Events.Record(abuse.KindRateLimit, handler.ClientKey(handler.ClientIP(r)), "new pastes user "+id)
@@ -241,7 +247,7 @@ func (d *Handler) takeOwnedPaste(w http.ResponseWriter, r *http.Request, p *auth
 	w.Header().Set("Retry-After", strconv.Itoa(handler.RetryAfterSeconds(left)))
 	WriteError(w, http.StatusTooManyRequests, "rate_limited",
 		fmt.Sprintf("Your account created too many pastes in the last minute. Try again in %d seconds.", handler.RetryAfterSeconds(left)))
-	return false
+	return nil, false
 }
 
 // overLimits returns the message and status that refuse an upload of a user

@@ -276,6 +276,15 @@ func (s *service) userUpload(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if len(unknown) > 0 {
 		return argsError("upload_log", unknown, argNames[UserUploadInput](), true), nil
 	}
+	// The arguments only an owned paste has are never null; content and
+	// extension take null as the anonymous upload_log does
+	null, err := nullArgs(req.Params.Arguments, ownerOnlyArgs)
+	if err != nil {
+		return toolError("invalid arguments: %v", err), nil
+	}
+	if len(null) > 0 {
+		return nullArgsError(null), nil
+	}
 
 	if strings.TrimSpace(in.Content) == "" {
 		return toolError("content is empty"), nil
@@ -330,11 +339,19 @@ func (s *service) userUpload(ctx context.Context, req *mcp.CallToolRequest) (*mc
 
 	ip, _ := ctx.Value(clientIPKey{}).(string)
 	// One budget of new owned pastes for every path, HTTP and MCP
-	if left, ok := s.docs.OwnedPastes.Take(p.User.ID); !ok {
+	refund, left, ok := s.docs.OwnedPastes.Take(p.User.ID)
+	if !ok {
 		s.docs.Event(abuse.KindRateLimit, ip, "new pastes user "+strconv.FormatInt(p.User.ID, 10))
 		return toolError("your account created too many pastes in the last minute, so nothing was stored: retry in %d seconds",
 			handler.RetryAfterSeconds(left)), nil
 	}
+	// Only a stored paste keeps its place in the budget
+	stored := false
+	defer func() {
+		if !stored {
+			refund()
+		}
+	}()
 	if held, _ := ctx.Value(uploadSlotKey{}).(bool); !held {
 		release, ok := s.docs.AcquireUpload(ip, int64(len(in.Content)))
 		if !ok {
@@ -373,6 +390,7 @@ func (s *service) userUpload(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if res := s.userUploadError(err, len(in.Content), maxLength); res != nil {
 		return res, nil
 	}
+	stored = true
 
 	base := baseURL(ctx, s.docs)
 	out := UserUploadOutput{

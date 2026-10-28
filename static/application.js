@@ -315,22 +315,43 @@ haste.prototype.hideLargeNotice = function () {
 haste.draftKey = 'hastebin.draft';
 haste.draftTTL = 30 * 60 * 1000;
 
-// Tell the person that saving failed because their login ended, with the
-// two ways on: sign in again and come back to this text, or save it as an
-// anonymous public paste. Nothing is saved until they choose, and every
-// later save in this page shows this again until they do.
-haste.prototype.showLoginEnded = function () {
-    var _this = this;
-    // Whose login ended: the draft for "Sign in again" goes back to them only
+// Remember whose login ended when a save was refused with 401: the account
+// of the page then. Later saves go out owned again only for that account;
+// another one signed in meanwhile, in another tab, is never saved to unasked.
+haste.prototype.loginEndedNow = function () {
     if (this.session && this.session.user) {
         this.endedUserID = this.session.user.id;
+        this.endedLogin = this.session.user.login;
     }
     this.loginEnded = true;
-    // The account control shows what the server thinks now
-    this.loadSession();
+};
+
+// The account signed in now when it is not the one whose login ended, else null
+haste.prototype.switchedAccount = function () {
+    if (!this.loginEnded || !haste_document.csrf || !this.session || !this.session.user ||
+        this.endedUserID === undefined || this.session.user.id === this.endedUserID) {
+        return null;
+    }
+    return this.session.user;
+};
+
+// Tell the person that saving failed because their login ended, with the
+// two ways on: sign in again and come back to this text, or save it as an
+// anonymous public paste. When another account signed in since, it names
+// that account and asks before saving there instead. Nothing is saved until
+// they choose, and every later save in this page shows this again until
+// they do.
+haste.prototype.showLoginEnded = function () {
+    var _this = this;
+    this.loginEnded = true;
     var $panel = $('#login-ended');
+    this.renderLoginEnded();
     $panel.find('.login-ended-signin').off('click').on('click', function () {
-        _this.signInAgain();
+        if (_this.switchedAccount()) {
+            _this.saveToCurrentAccount();
+        } else {
+            _this.signInAgain();
+        }
     });
     $panel.find('.login-ended-anon').off('click').on('click', function () {
         _this.hideLoginEnded();
@@ -349,6 +370,44 @@ haste.prototype.showLoginEnded = function () {
     $panel.prop('hidden', false);
     $(document.body).addClass('has-login-ended');
     $panel.find('.login-ended-signin').focus();
+    // The account control, and this panel, show what the server thinks now
+    this.loadSession();
+};
+
+// Fill the panel for the state now: the login ended, or another account
+// signed in since. Logins are set as text, never as markup.
+haste.prototype.renderLoginEnded = function () {
+    var $panel = $('#login-ended');
+    var $title = $panel.find('#login-ended-title');
+    var $text = $panel.find('#login-ended-text');
+    var $signin = $panel.find('.login-ended-signin');
+    $.each([$title, $text, $signin], function (i, $el) {
+        if ($el.data('default') === undefined) {
+            $el.data('default', $el.text());
+        }
+    });
+    var other = this.switchedAccount();
+    $panel.toggleClass('switched', !!other);
+    if (!other) {
+        $title.text($title.data('default'));
+        $text.text($text.data('default'));
+        $signin.text($signin.data('default'));
+        return;
+    }
+    $title.text('Not saved: you are now signed in as ' + other.login + '.');
+    $text.text((this.endedLogin ? this.endedLogin + "'s login ended" : 'Your login ended') +
+        ' and ' + other.login + ' signed in, maybe in another tab. Save to ' + other.login +
+        "'s account? Your text is still here.");
+    $signin.text('Save to ' + other.login + "'s account");
+};
+
+// The person chose to save to the account signed in now
+haste.prototype.saveToCurrentAccount = function () {
+    this.endedUserID = undefined;
+    this.endedLogin = undefined;
+    this.loginEnded = false;
+    this.hideLoginEnded();
+    this.lockDocument();
 };
 
 haste.prototype.hideLoginEnded = function () {
@@ -472,9 +531,17 @@ haste.prototype.lockDocument = function (anonymous) {
     console.log("LOCKING DOCUMENT");
     var _this = this;
     // After a login ended here, no save goes out anonymous unasked: the
-    // person signs in again or picks the anonymous public paste
+    // person signs in again or picks the anonymous public paste. Who is
+    // signed in now decides: the same account saves as usual, another one
+    // or none gets the panel, which asks first.
     if (this.loginEnded && !anonymous) {
-        this.showLoginEnded();
+        this.loadSession(function () {
+            if (_this.loginEnded) {
+                _this.showLoginEnded();
+            } else {
+                _this.lockDocument();
+            }
+        });
         return;
     }
     if (anonymous) {
@@ -483,6 +550,7 @@ haste.prototype.lockDocument = function (anonymous) {
     this.hideLoginEnded();
     this.doc.save(this.$textarea.val(), function (err, ret) {
         if (err && err.loginEnded) {
+            _this.loginEndedNow();
             _this.showLoginEnded();
         } else if (err) {
             _this.showMessage(err.message, 'error');
@@ -502,11 +570,11 @@ haste.prototype.lockDocument = function (anonymous) {
                 _this.showLargeNotice(ret.key, ret.size);
             }
             // Saved logged in: the paste is yours, with its edit window
-            if (haste_document.csrf) {
+            if (haste_document.csrf && !anonymous) {
                 paste_strip.load(ret.key);
             }
         }
-    });
+    }, anonymous);
 };
 
 haste.prototype.configureButtons = function () {
@@ -636,21 +704,33 @@ haste.prototype.loadInfo = function () {
     });
 };
 
-// Ask who is logged in and set the account control up for it
-haste.prototype.loadSession = function () {
+// Ask who is logged in and set the account control up for it, then run
+// done, when given
+haste.prototype.loadSession = function (done) {
     var _this = this;
     $.ajax('/api/v1/session', {
         type: 'get', dataType: 'json', success: function (session) {
             _this.session = session && session.user ? session : null;
             haste_document.csrf = _this.session && session.csrf ? session.csrf : null;
-            // Signed in again: saves are owned again
-            if (haste_document.csrf) {
+            // Signed in again as the account whose login ended: saves are
+            // owned again. Another account stays behind the panel, which
+            // asks before saving there.
+            if (haste_document.csrf && !_this.switchedAccount()) {
                 _this.loginEnded = false;
             }
+            if (_this.loginEnded && !$('#login-ended').prop('hidden')) {
+                _this.renderLoginEnded();
+            }
             _this.showAccount();
+            if (done) {
+                done();
+            }
         }, error: function () {
             _this.session = null;
             _this.showAccount();
+            if (done) {
+                done();
+            }
         }
     });
 };

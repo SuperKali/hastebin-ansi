@@ -110,19 +110,28 @@ func TestBearer(t *testing.T) {
 		require.ErrorIs(t, err, ErrInvalidToken, h)
 	}
 
-	// Two Bearer headers are no token, even when one is good; a Bearer
-	// header next to another scheme counts
+	// More than one Authorization header is no token, even when one is a
+	// good Bearer: next to another Bearer, another scheme or an empty one,
+	// in either order. None of them is picked or dropped.
+	for _, pair := range [][2]string{
+		{"Bearer " + tok, "Bearer " + NewToken()},
+		{"Basic dXNlcjpwYXNz", "Bearer\t" + tok},
+		{"", "Bearer " + tok},
+		{"Bearer " + tok, ""},
+		{"Basic dXNlcjpwYXNz", "Basic dXNlcjpwYXNz"},
+	} {
+		r := httptest.NewRequest("POST", "/log", nil)
+		r.Header.Add("Authorization", pair[0])
+		r.Header.Add("Authorization", pair[1])
+		require.True(t, HasBearer(r), "%q", pair)
+		p, err = svc.Bearer(r)
+		require.ErrorIs(t, err, ErrInvalidToken, "%q", pair)
+		require.Nil(t, p)
+	}
+	// One empty header is no token attempt, like no header
 	r := httptest.NewRequest("POST", "/log", nil)
-	r.Header.Add("Authorization", "Bearer "+tok)
-	r.Header.Add("Authorization", "Bearer "+NewToken())
-	_, err = svc.Bearer(r)
-	require.ErrorIs(t, err, ErrInvalidToken)
-	r = httptest.NewRequest("POST", "/log", nil)
-	r.Header.Add("Authorization", "Basic dXNlcjpwYXNz")
-	r.Header.Add("Authorization", "Bearer\t"+tok)
-	p, err = svc.Bearer(r)
-	require.NoError(t, err)
-	require.NotNil(t, p)
+	r.Header.Add("Authorization", "")
+	require.False(t, HasBearer(r))
 
 	// The checksum is checked before any lookup: with the database closed a
 	// malformed token is still just invalid, while a well formed one fails on the lookup

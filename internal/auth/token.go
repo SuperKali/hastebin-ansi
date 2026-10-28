@@ -97,26 +97,29 @@ func TokenDisplay(token string) string {
 }
 
 // bearerToken returns the token of an Authorization: Bearer header. present
-// is false when the request has no such header; other schemes are ignored.
-// The scheme matches in any case and ends at any whitespace, so "Bearer",
-// a tab and a token is a token attempt too. More than one Bearer header is
-// present with no token, which no token matches.
+// is false when the request has no such header; another scheme alone is
+// ignored. The scheme matches in any case and ends at any whitespace, so
+// "Bearer", a tab and a token is a token attempt too. More than one
+// Authorization header, of any scheme or empty, is present with no token,
+// which no token matches: none of them is silently picked or dropped.
 func bearerToken(r *http.Request) (token string, present bool) {
-	for _, header := range r.Header.Values("Authorization") {
-		header = strings.TrimSpace(header)
-		end := strings.IndexFunc(header, unicode.IsSpace)
-		if end < 0 {
-			end = len(header)
-		}
-		if !strings.EqualFold(header[:end], "Bearer") {
-			continue
-		}
-		if present {
-			return "", true
-		}
-		token, present = strings.TrimSpace(header[end:]), true
+	headers := r.Header.Values("Authorization")
+	switch len(headers) {
+	case 0:
+		return "", false
+	case 1:
+	default:
+		return "", true
 	}
-	return token, present
+	header := strings.TrimSpace(headers[0])
+	end := strings.IndexFunc(header, unicode.IsSpace)
+	if end < 0 {
+		end = len(header)
+	}
+	if !strings.EqualFold(header[:end], "Bearer") {
+		return "", false
+	}
+	return strings.TrimSpace(header[end:]), true
 }
 
 // HasBearer reports whether a request carries an Authorization: Bearer header

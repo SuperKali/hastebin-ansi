@@ -241,12 +241,12 @@ func (s *Service) sameOrigin(r *http.Request, origin string) bool {
 }
 
 // RequireAdmin lets through only admins with a session cookie. Everyone else,
-// and any request with an Authorization header, gets 404 as if the route did
-// not exist. It needs LoadSession first.
+// and any request with an Authorization header, empty or not, one or more,
+// gets 404 as if the route did not exist. It needs LoadSession first.
 func (s *Service) RequireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := FromContext(r.Context())
-		if r.Header.Get("Authorization") != "" || p == nil || p.Session == nil || !s.IsAdmin(p.User.GitHubID) {
+		if len(r.Header.Values("Authorization")) > 0 || p == nil || p.Session == nil || !s.IsAdmin(p.User.GitHubID) {
 			NotFound(w, r)
 			return
 		}
